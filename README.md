@@ -22,7 +22,7 @@ Python 3.10.0+ with other requirements specified in the ```requirements.txt```
 ```latex
 @misc{huang2025correctingnoisymultilabelpredictions,
       title={Correcting Noisy Multilabel Predictions: Modeling Label Noise through Latent Space Shifts}, 
-      author={Weipeng Huang and Qin Li and Yang Xiao and Cheng Qiao and Tie Cai and Junwei Liao and Neil J. Hurley and Guangyuan Piao},
+      author={Weipeng Huang and Qin Li and Yang Xiao and Cheng Qiao and Tie Cai and Junwei Liang and Neil J. Hurley and Guangyuan Piao},
       year={2025},
       eprint={2502.14281},
       archivePrefix={arXiv},
