@@ -1,3 +1,5 @@
+LSNPC: **L**atent Space **S**hift Model for **N**oisy **P**rediction **C**orrection. 
+
 This is the repository for the paper: [Correcting Noisy Multilabel Predictions: Modeling Label Noise through Latent Space Shifts](https://arxiv.org/abs/2502.14281)
 
 # Abstract
