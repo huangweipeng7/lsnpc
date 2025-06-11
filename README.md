@@ -2,6 +2,10 @@ LSNPC: **L**atent Space **S**hift Model for **N**oisy **P**rediction **C**orrect
 
 This is the repository for the paper: [Correcting Noisy Multilabel Predictions: Modeling Label Noise through Latent Space Shifts](https://arxiv.org/abs/2502.14281)
 
+### Deprecation
+In the code, **MLNLC** is equivalent to LSNPC. 
+
+
 # Abstract
 Noise in data appears to be inevitable in most real-world machine learning applications and would cause severe overfitting problems. Not only can data features contain noise, but labels are also prone to be noisy due to human input. In this paper, rather than noisy label learning in multiclass classifications, we instead focus on the less explored area of noisy label learning for multilabel classifications. Specifically, we investigate the post-correction of predictions generated from classifiers learned with noisy labels. The reasons are two-fold. Firstly, this approach can directly work with the trained models to save computational resources. Secondly, it could be applied on top of other noisy label correction techniques to achieve further improvements. To handle this problem, we appeal to deep generative approaches that are possible for uncertainty estimation. Our model posits that label noise arises from a stochastic shift in the latent variable, providing a more robust and beneficial means for noisy learning. We develop both unsupervised and semi-supervised learning methods for our model. The extensive empirical study presents solid evidence to that our approach is able to consistently improve the independent models and performs better than a number of existing methods across various noisy label settings. Moreover, a comprehensive empirical analysis of the proposed method is carried out to validate its robustness, including sensitivity analysis and an ablation study, among other elements.
 
@@ -32,3 +36,4 @@ Python 3.10.0+ with other requirements specified in the ```requirements.txt```
       url={https://arxiv.org/abs/2502.14281}, 
 }
 ```
+
