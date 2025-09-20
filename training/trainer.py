@@ -384,8 +384,8 @@ class HLCTrainer(Trainer):
             corrected_targets.append(corrected_labels_batch)
 
             pbar.set_description(f'training loss: {loss_all/n_runs:.4f} -- ' 
-                                  'HLC (delta={delta}) corrected '
-                                  '{corrected_num}/{pred.size(0)}')
+                                  f'HLC (delta={delta:.4f}) corrected '
+                                  f'{corrected_num}/{pred.size(0)}')
         return loss_all / n_runs, corrected_targets, corrected_num
 
     @torch.no_grad()
