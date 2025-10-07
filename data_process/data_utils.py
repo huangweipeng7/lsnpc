@@ -7,6 +7,7 @@ import torchvision.transforms as transforms
 from functools import partial
 from PIL import Image
 
+from .deepfashion import DeepFashion
 from .coco import COCO2014
 from .tomato import Tomato
 from .voc import Voc2007, Voc2012
@@ -57,6 +58,8 @@ def load_data(args):
         DataClass = Voc2012
     elif args.dataset=='tomato':
         DataClass = Tomato
+    elif args.dataset=='deepfashion':
+        DataClass = DeepFashion
     else:
         raise Exception(f"Dataset not prepared: {args.dataset}")
    
