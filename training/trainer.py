@@ -221,6 +221,180 @@ class Trainer:
         self.model.to(self.device)
 
 
+class MCMTrainer(Trainer):
+    def __init__(
+        self,
+        n_labels: int,
+        model: nn.Module,
+        loss_fn: Callable,
+        optimizer: torch.optim.Optimizer, 
+        arg_dict: Dict,
+        lr_scheduler: torch.optim.lr_scheduler.LRScheduler = None,
+        device: Union[str, torch.device] = 'cpu',
+        train_on_val: bool = False,
+        eval_test_at_final_loop_only: bool = True,
+        metric_storing_path: Union[str, Path] = './runs/results.csv'
+    ):
+        super().__init__(
+            n_labels=n_labels,
+            model=model,
+            loss_fn=loss_fn,
+            optimizer=optimizer, 
+            arg_dict=arg_dict,
+            lr_scheduler=lr_scheduler,
+            device=device,
+            train_on_val=train_on_val,
+            eval_test_at_final_loop_only=eval_test_at_final_loop_only,
+            metric_storing_path=metric_storing_path
+        )
+ 
+    def train_model(
+        self, 
+        n_epochs: int,
+        train_loader: DataLoader, 
+        val_loader: DataLoader = None,
+        test_loader: DataLoader = None, 
+        verbose: bool = False,
+        clean_set_loader: DataLoader = None
+    ):  
+        print(f'self.uid: {self.uid}')
+  
+        for epoch in range(n_epochs):
+            print(f'Epoch {epoch}')
+            train_loss = self.train_one_epoch(
+                train_loader, val_loader, test_loader, epoch=epoch
+            )
+            torch.cuda.empty_cache()
+            
+            # writer.add_scalar('training loss', train_loss, epoch)
+       
+            if self.train_on_val: 
+                assert clean_set_loader is not None 
+                self.train_on_val_one_epoch(clean_set_loader)  
+
+            self.eval_and_save(
+                epoch, n_epochs, val_loader, test_loader, verbose
+            )
+
+            if self.lr_scheduler is not None: 
+                self.lr_scheduler.step()
+
+    @torch.no_grad()
+    def eval_and_save(
+        self,   
+        epoch: int, 
+        n_epochs: int, 
+        val_loader: DataLoader = None,
+        test_loader: DataLoader = None, 
+        verbose: bool = False
+    ): 
+        self.eval()
+
+        # It seems sufficient to not use the patience as it may always be unused in most cases.
+        if val_loader is not None: #and self.arg_dict['patience'] > self.patentice_count: #====> This seems a bit buggy 
+            v_batch = test(self, val_loader, nn.BCELoss()) 
+
+            if verbose:
+                print(
+                    f"val loss: {v_batch['loss']:.4f}, rloss: {v_batch['rloss']:.4f}, " 
+                    f"macro f1: {v_batch['macro_f1']:.4f}, micro f1: {v_batch['micro_f1']:.4f}, "
+                    f"mAP: {v_batch['mAP']:.4f}"
+                )
+
+            # utils.store_results({**v_batch, **self.arg_dict, 'epoch': epoch, 'data_split': 'val'})
+ 
+            if v_batch['micro_f1'] >= self.metric:
+                self.metric = v_batch['micro_f1'] 
+                self.best_ep = epoch
+                self.save_model(self.arg_dict, self.res_path)
+                # self.tmp_model = deepcopy(self.model).cpu()
+
+        if test_loader is not None:
+            if not self.eval_test_at_final_loop_only:
+                t_batch = test(self, test_loader, nn.BCELoss()) 
+            elif epoch == n_epochs - 1:
+                # Test at the last epoch
+                # Load the checkpoint we stored 
+                self.model.load_state_dict(
+                    torch.load(self.res_path / f'{self.uid}.pth', weights_only=True)
+                )
+ 
+                t_batch = test(self, test_loader, nn.BCELoss())
+            else:
+                return 
+ 
+            if verbose:
+                print(
+                    f"test loss: {t_batch['loss']:.4f}, rloss: {t_batch['rloss']:.4f}, "  
+                    f"macro f1: {t_batch['macro_f1']:.4f}, micro f1: {t_batch['micro_f1']:.4f}, "
+                    f"mAP: {t_batch['mAP']:.4f}"
+                )
+                print('best epoch:', self.best_ep)
+                
+            utils.store_results(
+                {**t_batch, **self.arg_dict, 'epoch': epoch, 'data_split': 'test'},
+                self.metric_storing_path
+            )
+ 
+    def train_one_epoch(
+        self, 
+        train_loader: DataLoader, 
+        val_loader: DataLoader = None, 
+        test_loader: DataLoader = None,
+        epoch: int = -1
+    ) -> float:
+        self.train()
+    
+        loss_all = 0.
+        n_runs = 0
+        for batch in (pbar:=tqdm.tqdm(train_loader)):  
+            data, target = (
+                batch['data'].to(self.device), 
+                batch['labels'].float().to(self.device) 
+            )      
+            self.optimizer.zero_grad()
+    
+            y_preds, noisy_probs = self.model(data)
+            loss, _ = self.loss_fn(noisy_probs, target, self.model.pred_sigmoid(y_preds))
+    
+            loss.backward()
+    
+            loss_all += loss.item()
+            n_runs += 1
+    
+            nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=2)
+            self.optimizer.step()
+            
+            pbar.set_description(f'training loss: {loss_all/n_runs:.4f}')
+        return loss_all / n_runs   
+
+    @torch.no_grad()
+    def predict(self, batch: Dict) -> torch.Tensor:
+        data = batch['data'].to(self.device)
+        y, _ = self.model(data)
+        return F.sigmoid(y)
+
+    def eval(self):
+        self.model.eval()
+
+    def train(self):
+        self.model.train()
+
+    def save_model(self, arg_dict: Dict, path: Union[str, Path]):
+        # Save the model
+        path = Path(path)  
+        path.mkdir(parents=True, exist_ok=True)
+
+        torch.save(
+            self.model.cpu().state_dict(), 
+            path / f'{self.uid}.pth'
+        )
+        with open(path / f'{self.uid}.json', 'wt') as f:
+            json.dump(arg_dict, f, indent=4)
+        # Back to GPU in case keep training
+        self.model.to(self.device)
+
+
 class HLCTrainer(Trainer):
     def __init__(
         self,
@@ -527,6 +701,7 @@ class VAETrainer(Trainer):
     @torch.no_grad
     def get_target(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
         out = self.model.pretrained_clf(batch['data'].to(self.device))
+        
         return F.sigmoid(
             out if not isinstance(out, tuple) else out[0]
         )

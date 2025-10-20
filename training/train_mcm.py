@@ -4,6 +4,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import tqdm
+
 from datetime import datetime
 from pathlib import Path
 from pprint import pprint
@@ -20,13 +21,13 @@ from transformers import (
 from torchsummary import summary
 
 import dnn.hlc as hlc
-from .trainer import Trainer
+from .trainer import MCMTrainer
 from argument import (
     CustomTrainingArguments,
     DataTrainingArguments,
     ModelArguments
 )
-from dnn.mlc import MultilabelClassifier, ViTModelWrapper
+from dnn.mcm import MCMClassifier, ViTModelWrapper, MCMLoss
 from dnn.utils import freeze_param, get_device
 from metrics import test 
 from packaging import version
@@ -62,8 +63,8 @@ def train_clf():
  
     # Check consistency
     if train_args.checksum:
-        print('val_dataset true labels', (val_dataset.true_labels[:10]))
-        print('val_dataset labels', val_dataset.labels[:10])
+        print('val_dataset true labels', (val_dataset0.true_labels[:10]))
+        print('val_dataset labels', val_dataset0.labels[:10])
         print('test_dataset true labels', (test_dataset.true_labels[:10]))
 
     train_loader = DataLoader(
@@ -114,15 +115,15 @@ def train_clf():
         else:
             raise Exception('Image feature encoder is not defined...')
 
-        if model_args.clf_name == 'mlclf': 
-            model = MultilabelClassifier(encoder, emb_size, n_labels)
+        if model_args.clf_name == 'mlmcm': 
+            model = MCMClassifier(encoder, emb_size, n_labels)
         elif model_args.clf_name == 'addgcn':
             model = hlc.get_model(n_labels)
         elif model_args.clf_name == 'hlc':
             model = hlc.get_model(n_labels)
         else:
             raise Exception('Not recognized classifier')
-        summary(model, (3,224,224), device='cpu')
+        #summary(model, (3,224,224), device='cpu')
 
         optimizer = torch.optim.Adam(
             model.parameters(),
@@ -131,10 +132,9 @@ def train_clf():
         )
         lr_scheduler = None
   
-        # Loss for multi-label classification
-        loss_fn = nn.BCEWithLogitsLoss()
+        loss_fn = MCMLoss()
 
-        trainer = Trainer(
+        trainer = MCMTrainer(
             model=model,
             n_labels=n_labels,
             loss_fn=loss_fn,

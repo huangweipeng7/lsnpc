@@ -15,6 +15,8 @@ from urllib.parse import urlparse
 from urllib.request import urlretrieve
 from typing import Dict, Union
 from pprint import pprint
+from torch import Tensor
+from typing import Tuple
 
 
 class Warp(object):
@@ -255,3 +257,233 @@ def store_results(
     df = pd.DataFrame(filtered_dict, index=[0])
     file_exist= os.path.exists(store_file)
     df.to_csv(store_file, mode='a', index=False, header=(not file_exist))
+
+class ConstraintUtils:
+    """
+    Utility class for enforcing probability constraints on confusion matrices.
+    
+    Implements the constraint set Z = {Z ∈ R^(K×2K) | Z * 1_(2K) = 1_K, Z ≥ 0}
+    where Z = [A | B] is the horizontal concatenation of confusion matrices A and B.
+    
+    This ensures that the MCM model maintains valid probabilistic interpretations
+    throughout training by projecting confusion matrices onto the constraint set.
+    """
+    
+    @staticmethod
+    def project_confusion_matrices(A: Tensor, B: Tensor, epsilon: float = 1e-8) -> Tuple[Tensor, Tensor]:
+        """
+        Project confusion matrices A and B onto the probability constraint set.
+        
+        The constraint set requires:
+        1. All entries of A and B are non-negative (A ≥ 0, B ≥ 0)
+        2. Each row of the concatenated matrix [A | B] sums to 1
+        
+        Args:
+            A: Confusion matrix A of shape (K, K) representing positive class influence
+            B: Confusion matrix B of shape (K, K) representing negative class influence  
+            epsilon: Small constant for numerical stability (default: 1e-8)
+            
+        Returns:
+            Tuple containing:
+            - A_projected: Projected confusion matrix A satisfying constraints
+            - B_projected: Projected confusion matrix B satisfying constraints
+            
+        Raises:
+            ValueError: If input tensors have incorrect shapes or types
+        """
+        # Validate input tensors
+        ConstraintUtils._validate_input_matrices(A, B)
+        
+        K = A.shape[0]
+        
+        # Step 1: Enforce non-negativity constraint
+        # All entries must be ≥ 0
+        A_projected = torch.clamp(A, min=0.0)
+        B_projected = torch.clamp(B, min=0.0)
+        
+        # Step 2: Concatenate matrices horizontally: Z = [A | B]
+        Z = torch.cat([A_projected, B_projected], dim=1)  # Shape: (K, 2K)
+        
+        # Step 3: Compute row sums
+        row_sums = Z.sum(dim=1, keepdim=True)  # Shape: (K, 1)
+        
+        # Step 4: Handle zero rows (rows that sum to zero after non-negativity)
+        # If a row sums to zero, distribute probability uniformly
+        zero_mask = row_sums < epsilon
+        uniform_value = 1.0 / (2 * K)  # Uniform distribution over 2K entries
+        
+        # Replace zero rows with uniform distribution
+        if torch.any(zero_mask):
+            logger.debug(f"Found {zero_mask.sum().item()} zero rows, applying uniform distribution")
+            Z_modified = Z.clone()
+            Z_modified[zero_mask.squeeze()] = uniform_value
+            row_sums_modified = Z_modified.sum(dim=1, keepdim=True)
+        else:
+            Z_modified = Z
+            row_sums_modified = row_sums
+        
+        # Step 5: Normalize rows to sum to 1
+        # Use safe division with epsilon to prevent division by zero
+        Z_normalized = Z_modified / (row_sums_modified + epsilon)
+        
+        # Step 6: Split back into A and B matrices
+        A_projected = Z_normalized[:, :K]  # First K columns
+        B_projected = Z_normalized[:, K:]  # Last K columns
+        
+        # Validate output satisfies constraints
+        ConstraintUtils._validate_constraints(A_projected, B_projected, epsilon)
+        
+        logger.debug(f"Projected confusion matrices: "
+                    f"A_range=[{A_projected.min().item():.3f}, {A_projected.max().item():.3f}], "
+                    f"B_range=[{B_projected.min().item():.3f}, {B_projected.max().item():.3f}]")
+        
+        return A_projected, B_projected
+    
+    @staticmethod
+    def _validate_input_matrices(A: Tensor, B: Tensor) -> None:
+        """
+        Validate input confusion matrices for correct shape and type.
+        
+        Args:
+            A: Confusion matrix A
+            B: Confusion matrix B
+            
+        Raises:
+            ValueError: If matrices have incorrect shapes, types, or device mismatch
+        """
+        if not isinstance(A, Tensor):
+            raise ValueError(f"A must be a torch.Tensor, got {type(A)}")
+        if not isinstance(B, Tensor):
+            raise ValueError(f"B must be a torch.Tensor, got {type(B)}")
+        
+        if A.dim() != 2:
+            raise ValueError(f"A must be 2-dimensional, got shape {A.shape}")
+        if B.dim() != 2:
+            raise ValueError(f"B must be 2-dimensional, got shape {B.shape}")
+        
+        if A.shape != B.shape:
+            raise ValueError(f"A and B must have same shape, got A{A.shape} vs B{B.shape}")
+        
+        K = A.shape[0]
+        if A.shape[1] != K:
+            raise ValueError(f"A must be square matrix (K, K), got shape {A.shape}")
+        
+        # Check device compatibility
+        if A.device != B.device:
+            raise ValueError(f"A and B must be on same device, got A{A.device} vs B{B.device}")
+        
+        logger.debug(f"Validated input matrices: shape={A.shape}, device={A.device}")
+    
+    @staticmethod
+    def _validate_constraints(A: Tensor, B: Tensor, epsilon: float = 1e-6) -> None:
+        """
+        Validate that projected matrices satisfy all constraints.
+        
+        Args:
+            A: Projected confusion matrix A
+            B: Projected confusion matrix B
+            epsilon: Tolerance for constraint validation
+            
+        Raises:
+            RuntimeError: If constraints are not satisfied within tolerance
+        """
+        K = A.shape[0]
+        
+        # Check non-negativity constraint
+        if torch.any(A < -epsilon) or torch.any(B < -epsilon):
+            min_A = A.min().item()
+            min_B = B.min().item()
+            raise RuntimeError(f"Non-negativity constraint violated: A_min={min_A:.6f}, B_min={min_B:.6f}")
+        
+        # Check row-sum constraint
+        Z = torch.cat([A, B], dim=1)
+        row_sums = Z.sum(dim=1)
+        target_sums = torch.ones(K, device=A.device)
+        
+        max_deviation = torch.abs(row_sums - target_sums).max().item()
+        if max_deviation > epsilon:
+            raise RuntimeError(f"Row-sum constraint violated: max_deviation={max_deviation:.6f} > epsilon={epsilon}")
+        
+        logger.debug(f"Constraint validation passed: max_deviation={max_deviation:.6f}")
+    
+    @staticmethod
+    def compute_constraint_violation(A: Tensor, B: Tensor) -> dict:
+        """
+        Compute the degree of constraint violation for given confusion matrices.
+        
+        Args:
+            A: Confusion matrix A
+            B: Confusion matrix B
+            
+        Returns:
+            Dictionary containing constraint violation metrics:
+            - 'non_negativity_violation_A': Maximum negative value in A
+            - 'non_negativity_violation_B': Maximum negative value in B  
+            - 'row_sum_max_deviation': Maximum deviation from row-sum constraint
+            - 'row_sum_mean_deviation': Mean deviation from row-sum constraint
+        """
+        ConstraintUtils._validate_input_matrices(A, B)
+        
+        K = A.shape[0]
+        
+        # Non-negativity violations
+        neg_A = torch.clamp(-A, min=0.0)  # Positive where A < 0
+        neg_B = torch.clamp(-B, min=0.0)  # Positive where B < 0
+        
+        non_neg_violation_A = neg_A.max().item()
+        non_neg_violation_B = neg_B.max().item()
+        
+        # Row-sum violations
+        Z = torch.cat([A, B], dim=1)
+        row_sums = Z.sum(dim=1)
+        target_sums = torch.ones(K, device=A.device)
+        
+        deviations = torch.abs(row_sums - target_sums)
+        row_sum_max_deviation = deviations.max().item()
+        row_sum_mean_deviation = deviations.mean().item()
+        
+        violations = {
+            'non_negativity_violation_A': non_neg_violation_A,
+            'non_negativity_violation_B': non_neg_violation_B,
+            'row_sum_max_deviation': row_sum_max_deviation,
+            'row_sum_mean_deviation': row_sum_mean_deviation,
+            'is_valid': (non_neg_violation_A <= 1e-6 and 
+                        non_neg_violation_B <= 1e-6 and 
+                        row_sum_max_deviation <= 1e-6)
+        }
+        
+        return violations
+    
+    @staticmethod
+    def create_valid_initialization(K: int, device: torch.device = None) -> Tuple[Tensor, Tensor]:
+        """
+        Create valid initial confusion matrices satisfying all constraints.
+        
+        Creates matrices that satisfy:
+        - A initialized as identity matrix (no noise assumption)
+        - B initialized as zero matrix
+        - All constraints satisfied
+        
+        Args:
+            K: Number of classes
+            device: Device for created tensors (default: CPU)
+            
+        Returns:
+            Tuple of (A_initial, B_initial) satisfying constraints
+        """
+        if device is None:
+            device = torch.device('cpu')
+        
+        # Initialize A as identity matrix (no noise assumption)
+        A_initial = torch.eye(K, device=device)
+        
+        # Initialize B as zero matrix
+        B_initial = torch.zeros(K, K, device=device)
+        
+        # Verify constraints are satisfied
+        violations = ConstraintUtils.compute_constraint_violation(A_initial, B_initial)
+        if not violations['is_valid']:
+            raise RuntimeError(f"Initialization violates constraints: {violations}")
+        
+        
+        return A_initial, B_initial

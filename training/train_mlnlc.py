@@ -29,6 +29,7 @@ from argument import (
     ModelArguments
 )
 from dnn.mlc import MultilabelClassifier, ViTModelWrapper
+from dnn.mcm import MCMClassifier
 from dnn.utils import freeze_param, get_device
 from metrics import test
 
@@ -171,6 +172,8 @@ def train_mlnlc():
         pretrained_clf = hlc.get_model(encoder, emb_size, n_labels)
     elif model_args.clf_name == 'hlc':
         pretrained_clf = hlc.get_model(encoder, emb_size, n_labels)
+    elif model_args.clf_name == 'mlmcm':
+        pretrained_clf = MCMClassifier(encoder, emb_size, n_labels)
     else:
         raise AttributeError('Not recognized classifier')
 

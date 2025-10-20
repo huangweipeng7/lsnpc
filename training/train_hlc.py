@@ -129,6 +129,8 @@ def train_hlc(run_index=0):
             model = hlc.get_model(encoder, emb_size, n_labels)
         else:
             raise Exception('Not recognized classifier')
+        
+        summary(model, (3,224,224), device='cpu')
  
         optimizer = torch.optim.Adam(
             model.parameters(),
