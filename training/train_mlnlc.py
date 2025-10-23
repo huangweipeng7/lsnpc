@@ -201,7 +201,7 @@ def train_mlnlc():
             dataset=val_dataset1,
             batch_size=train_args.batch_size,
             num_workers=data_args.num_workers,
-            drop_last=False,
+            drop_last=True,
             shuffle=True,
             pin_memory=True
         )

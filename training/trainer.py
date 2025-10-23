@@ -97,7 +97,7 @@ class Trainer:
        
             if self.train_on_val: 
                 assert clean_set_loader is not None 
-                self.train_on_val_one_epoch(val_loader)  
+                self.train_on_val_one_epoch(clean_set_loader)  
 
             self.eval_and_save(
                 epoch, n_epochs, val_loader, test_loader, verbose
@@ -384,8 +384,8 @@ class HLCTrainer(Trainer):
             corrected_targets.append(corrected_labels_batch)
 
             pbar.set_description(f'training loss: {loss_all/n_runs:.4f} -- ' 
-                                  'HLC (delta={delta}) corrected '
-                                  '{corrected_num}/{pred.size(0)}')
+                                  f'HLC (delta={delta:.4f}) corrected '
+                                  f'{corrected_num}/{pred.size(0)}')
         return loss_all / n_runs, corrected_targets, corrected_num
 
     @torch.no_grad()

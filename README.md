@@ -24,6 +24,15 @@ Python 3.10.0+ with other requirements specified in the ```requirements.txt```
 📄 utils.py
 ```
 
+# Dataset
+For [Tomato dataset](https://github.com/mamta-joshi-gehlot/Tomato-Village/tree/main/Variant-b(MultiLabel%20Classification)), the downloaded zip file needs to be unziped into `[root]/tomato` folder with following file and subfolders. The `[root]` is the root folder we set with our argument.
+```python
+📁 train
+📁 test
+📁 val
+📄 anno.csv (the csv file from Variant-b(MultiLabel Classification)
+```
+
 # Citation
 ```latex
 @misc{huang2025correctingnoisymultilabelpredictions,
