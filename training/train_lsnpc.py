@@ -44,7 +44,7 @@ class VAETrainingArguments(CustomTrainingArguments):
         metadata={'help': 'beta in beta-vae'}
     )
     post_model: str = field(
-        default='mlnlc',
+        default='lsnpc',
         metadata={'help': 'the post method name'}
     )
     grad_norm: int = field(
@@ -121,7 +121,7 @@ else:
     from data_process import data_utils 
 
 
-def train_mlnlc():
+def train_lsnpc():
     if train_args.semi_sup:
         train_args.post_model += '_semi'
 
@@ -150,7 +150,9 @@ def train_mlnlc():
     # print(f'Val1 examples: {len(val_dataset1.labels)}')
     # print(f'Test examples: {len(test_dataset.labels)}')
     # print(f'Number of labels: {n_labels}')
-    if model_args.img_encoder == 'resnet50': 
+    if model_args.img_encoder == 'resnet50':
+        # Using 0.1.0
+        # encoder = resnet50(pretrained=True)
         encoder = resnet50(weights=ResNet50_Weights.DEFAULT)
         encoder = torch.nn.Sequential(*(list(encoder.children())[:-1]))
         encoder.fc = nn.Flatten()
@@ -290,8 +292,8 @@ def train_mlnlc():
             device=get_device(), 
             train_on_val=train_args.semi_sup, 
             grad_norm=train_args.grad_norm,
-            eval_test_at_final_loop_only=train_args.eval_test_at_final_loop_only,
-            metric_storing_path=train_args.metric_storing_path
+            eval_test_at_final_loop_only=train_args.eval_test_at_final_loop_only, 
+            metric_storing_path=f"./results/{arg_dict['dataset']}_results.csv"
         )
 
         trainer.train_model(
@@ -307,4 +309,4 @@ def train_mlnlc():
 
 
 if __name__ == '__main__':
-    train_mlnlc()
+    train_lsnpc()

@@ -27,7 +27,16 @@ from argument import (
 from data_process import data_utils as data_utils
 from dnn.mlc import MultilabelClassifier, ViTModelWrapper
 from dnn.utils import freeze_param, get_device
-from metrics import test 
+from metrics import test
+#from nlc.nlc_vae import (
+#    init_label_embedding,
+#    AttentionLabelEncoder,
+#    CorrectionLoss,
+#    EncoderCopulasWrapper,
+#    MLCEncoder, 
+#    MLCDecoder, 
+#    NoisyLabelCorrectionVAE
+#)
 
 
 @dataclass
@@ -74,11 +83,20 @@ def train_knn():
 
     print(test_dataset)
   
-    if model_args.img_encoder == 'resnet50': 
+    if model_args.img_encoder == 'resnet50':
+        # Using 0.1.0
+        # encoder = resnet50(pretrained=True)
         encoder = resnet50(weights=ResNet50_Weights.DEFAULT)
         encoder = torch.nn.Sequential(*(list(encoder.children())[:-1]))
         encoder.fc = nn.Flatten()
-        emb_size = 2048 
+        emb_size = 2048
+    elif model_args.img_encoder == 'vit224':
+        encoder = ViTModelWrapper(
+            ViTModel.from_pretrained(
+                'local_models/vit224', local_files_only=True
+            )
+        )
+        emb_size = 768
     elif model_args.img_encoder == 'levit':
         encoder = ViTModelWrapper(
             LevitModel.from_pretrained(
@@ -140,7 +158,8 @@ def train_knn():
             model = KNeighborsClassifier(n_neighbors=train_args.k, weights='distance'),
             n_labels = n_labels,
             arg_dict = arg_dict,
-            encoder = pretrained_clf.encoder if hasattr(pretrained_clf, 'encoder') else encoder,
+            encoder = pretrained_clf.encoder if hasattr(pretrained_clf, 'encoder') else encoder, 
+            metric_storing_path=f"./results/{arg_dict['dataset']}_results.csv"
         )
 
         trainer.train_model(

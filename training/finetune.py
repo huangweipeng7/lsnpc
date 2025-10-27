@@ -70,7 +70,13 @@ def train_clf():
     data = data_utils.load_data(data_args)
     train_dataset, val_dataset0, val_dataset1, test_dataset, n_labels = \
         data['train_dataset'], data['val_dataset0'], data['val_dataset1'], data['test_dataset'], data['n_labels']
- 
+
+    # print(f'Training examples: {len(train_dataset.labels)}')
+    # print(f'Val0 examples: {len(val_dataset0.labels)}')
+    # print(f'Val1 examples: {len(val_dataset1.labels)}')
+    # print(f'Test examples: {len(test_dataset.labels)}')
+    # print(f'Number of labels: {n_labels}')
+
     # Check consistency
     if train_args.checksum:
         print('val_dataset true labels', (val_dataset.true_labels[:10]))
@@ -132,7 +138,8 @@ def train_clf():
         elif model_args.clf_name == 'hlc':
             model = hlc.get_model(n_labels)
         else:
-            raise Exception('Not recognized classifier') 
+            raise Exception('Not recognized classifier')
+        #summary(model, (3,224,224), device='cpu')
 
         model.load_state_dict(
            torch.load(train_args.pretrained_clf, weights_only=True)
@@ -169,8 +176,16 @@ def train_clf():
             verbose=True
         )
 
-        print(f'Round {run_index} finished. \n\n')  
+        print(f'Round {run_index} finished. \n\n')
+        #res_path = Path(train_args.result_dir) / (
+        #    f'./clf/{data_args.dataset}_{data_args.noise_type}_'
+        #    f'{data_args.noise_rate}_{model_args.img_encoder}_'
+        #    f'ep{train_args.n_train_epoch}_rd{train_args.run_index}/'
+        #)
+        #trainer.save_model(arg_dict, res_path)
         
+        # return trainer 
+
 
 if __name__ == '__main__':
     train_clf()

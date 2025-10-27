@@ -3,7 +3,7 @@
 dataset='voc2007'
 for noise_type in 'symmetric'  
 do
-	for img_encoder in 'levit' # 'resnet50' 'vit224' 
+	for img_encoder in 'levit' 'resnet50' 
 	do
 		for noise in '0.0' '0.4' '0.5' '0.3'
 		do
@@ -32,7 +32,7 @@ done
  
 for noise_type in 'pairflip'
 do
-	for img_encoder in 'levit' #'resnet50' 'vit224'   
+	for img_encoder in 'levit' 'resnet50'    
 	do
 		for noise in '0.4' '0.5' '0.3'
 		do
