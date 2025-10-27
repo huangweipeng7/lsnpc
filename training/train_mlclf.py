@@ -59,7 +59,13 @@ def train_clf():
     data = data_utils.load_data(data_args)
     train_dataset, val_dataset0, _, test_dataset, n_labels = \
         data['train_dataset'], data['val_dataset0'], data['val_dataset1'], data['test_dataset'], data['n_labels']
- 
+
+    # print(f'Training examples: {len(train_dataset.labels)}')
+    # print(f'Val0 examples: {len(val_dataset0.labels)}')
+    # print(f'Val1 examples: {len(val_dataset1.labels)}')
+    # print(f'Test examples: {len(test_dataset.labels)}')
+    # print(f'Number of labels: {n_labels}')
+
     # Check consistency
     if train_args.checksum:
         print('val_dataset true labels', (val_dataset.true_labels[:10]))
@@ -103,7 +109,14 @@ def train_clf():
             encoder = resnet50(weights=ResNet50_Weights.DEFAULT)
             encoder = torch.nn.Sequential(*(list(encoder.children())[:-1]))
             encoder.fc = nn.Flatten()
-            emb_size = 2048 
+            emb_size = 2048
+        elif model_args.img_encoder == 'vit224':
+            encoder = ViTModelWrapper(
+                ViTModel.from_pretrained(
+                    'local_models/levit', local_files_only=True
+                )
+            )
+            emb_size = 768 
         elif model_args.img_encoder == 'levit':
             encoder = ViTModelWrapper(
                 LevitModel.from_pretrained(
@@ -142,7 +155,8 @@ def train_clf():
             lr_scheduler=lr_scheduler,
             device=get_device(),
             arg_dict=arg_dict,
-            eval_test_at_final_loop_only=train_args.eval_test_at_final_loop_only
+            eval_test_at_final_loop_only=train_args.eval_test_at_final_loop_only, 
+            metric_storing_path=f"./results/{arg_dict['dataset']}_results.csv"
         )
 
         trainer.train_model(

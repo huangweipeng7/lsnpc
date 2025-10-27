@@ -4,15 +4,17 @@ import torch
 import tqdm
 import warnings
 warnings.filterwarnings('ignore', category=UserWarning, message='TypedStorage is deprecated')
- 
-from torchmetrics.classification import(
-    MultilabelAUROC,
+
+from sklearn.metrics import (
+    accuracy_score,
+    coverage_error, 
+    hamming_loss, 
+    label_ranking_loss, 
+    label_ranking_average_precision_score
+)
+from torchmetrics.classification import( 
     MultilabelAveragePrecision, 
     MultilabelF1Score,
-    MultilabelHammingDistance,
-    MultilabelPrecision,
-    MultilabelRecall,
-    MultilabelRankingAveragePrecision,
     MultilabelRankingLoss
 )
 
@@ -30,22 +32,28 @@ def test(trainer, loader, criterion):
     n_labels = trainer.n_labels
  
     rloss = MultilabelRankingLoss(n_labels).to(device) 
-    mAP = MultilabelRankingAveragePrecision(n_labels).to(device)
+    macro_mAP = MultilabelAveragePrecision(n_labels, average='macro').to(device)
+    micro_mAP = MultilabelAveragePrecision(n_labels, average='micro').to(device)
     macro_f1 = MultilabelF1Score(n_labels, average='macro').to(device)
     micro_f1 = MultilabelF1Score(n_labels, average='micro').to(device)
 
     for batch in tqdm.tqdm(loader, colour='green'):
         # Pass to gpu or cpu
-        pred = trainer.predict(batch) #.round()
+        pred = trainer.predict(batch) 
         target = batch['labels'].to(device)
- 
+
+        # Calculate stats
+        # print(pred[:3], target[:3])
+        # assert (pred >= 0).all() and (pred <= 1).all(), pred.mean()
+        # assert (target >= 0).all() and (target <= 1).all()
+        
         loss = criterion(pred, target.float())
         running_loss += loss.item()
         
         target = target.int()
  
-        rloss.update(pred, target) 
-        mAP.update(pred, target)
+        macro_mAP.update(pred, target)
+        micro_mAP.update(pred, target)
         macro_f1.update(pred, target)
         micro_f1.update(pred, target)
 
@@ -53,12 +61,176 @@ def test(trainer, loader, criterion):
 
     res_doc = {
         'loss': learn_loss, 
-        'rloss': rloss.compute().item(), 
-        'mAP': mAP.compute().item(), 
-        'macro_f1': macro_f1.compute().item(),
-        'micro_f1': micro_f1.compute().item(),
+        'micro_mAP': round(micro_mAP.compute().item(), 4), 
+        'macro_mAP': round(macro_mAP.compute().item(), 4), 
+        'macro_f1': round(macro_f1.compute().item(), 4),
+        'micro_f1': round(micro_f1.compute().item(), 4),
     }
      
     return res_doc
-           
-     
+          
+def compute_cover(labels, outputs):
+    n_labels = labels.shape[1]
+    loss = coverage_error(labels, outputs)
+
+    return (loss-1)/n_labels
+    
+class AveragePrecisionMeter(object):
+    """
+    The APMeter measures the average precision per class.
+    The APMeter is designed to operate on `NxK` Tensors `output` and
+    `target`, and optionally a `Nx1` Tensor weight where (1) the `output`
+    contains model output scores for `N` examples and `K` classes that ought to
+    be higher when the model is more convinced that the example should be
+    positively labeled, and smaller when the model believes the example should
+    be negatively labeled (for instance, the output of a sigmoid function); (2)
+    the `target` contains only values 0 (for negative examples) and 1
+    (for positive examples); and (3) the `weight` ( > 0) represents weight for
+    each sample.
+    """
+
+    def __init__(self, difficult_examples=True):
+        super(AveragePrecisionMeter, self).__init__()
+        self.reset()
+        self.difficult_examples = difficult_examples
+
+    def reset(self):
+        """Resets the meter with empty member variables"""
+        self.scores = torch.FloatTensor(torch.FloatStorage())
+        self.targets = torch.LongTensor(torch.LongStorage())
+
+    def add(self, output, target):
+        """
+        Args:
+            output (Tensor): NxK tensor that for each of the N examples
+                indicates the probability of the example belonging to each of
+                the K classes, according to the model. The probabilities should
+                sum to one over all classes
+            target (Tensor): binary NxK tensort that encodes which of the K
+                classes are associated with the N-th input
+                    (eg: a row [0, 1, 0, 1] indicates that the example is
+                         associated with classes 2 and 4)
+            weight (optional, Tensor): Nx1 tensor representing the weight for
+                each example (each weight > 0)
+        """
+        if not torch.is_tensor(output):
+            output = torch.from_numpy(output)
+        if not torch.is_tensor(target):
+            target = torch.from_numpy(target)
+
+        if output.dim() == 1:
+            output = output.view(-1, 1)
+        else:
+            assert output.dim() == 2, \
+                'wrong output size (should be 1D or 2D with one column \
+                per class)'
+        if target.dim() == 1:
+            target = target.view(-1, 1)
+        else:
+            assert target.dim() == 2, \
+                'wrong target size (should be 1D or 2D with one column \
+                per class)'
+        if self.scores.numel() > 0:
+            assert target.size(1) == self.targets.size(1), \
+                'dimensions for output should match previously added examples.'
+
+        # make sure storage is of sufficient size
+        if self.scores.storage().size() < self.scores.numel() + output.numel():
+            new_size = math.ceil(self.scores.storage().size() * 1.5)
+            self.scores.storage().resize_(int(new_size + output.numel()))
+            self.targets.storage().resize_(int(new_size + output.numel()))
+
+        # store scores and targets
+        offset = self.scores.size(0) if self.scores.dim() > 0 else 0
+        self.scores.resize_(offset + output.size(0), output.size(1))
+        self.targets.resize_(offset + target.size(0), target.size(1))
+        self.scores.narrow(0, offset, output.size(0)).copy_(output)
+        self.targets.narrow(0, offset, target.size(0)).copy_(target)
+
+    def value(self):
+        """Returns the model's average precision for each class
+        Return:
+            ap (FloatTensor): 1xK tensor, with avg precision for each class k
+        """
+
+        if self.scores.numel() == 0:
+            return 0
+        ap = torch.zeros(self.scores.size(1))
+        rg = torch.arange(1, self.scores.size(0)).float()
+        # compute average precision for each class
+        for k in range(self.scores.size(1)):
+            # sort scores
+            scores = self.scores[:, k]
+            targets = self.targets[:, k]
+            # compute average precision
+
+            ap[k] = AveragePrecisionMeter.average_precision(scores, targets, self.difficult_examples)
+        return ap
+
+    @staticmethod
+    def average_precision(output, target, difficult_examples=True):
+
+        # sort examples
+        sorted, indices = torch.sort(output, dim=0, descending=True)
+        # print(indices.size())
+
+        # Computes prec@i
+        pos_count = 0.
+        total_count = 0.
+        precision_at_i = 0.
+        for i in indices:
+            label = target[i]
+            if difficult_examples and label == 0:
+                total_count += 1
+                continue
+            if label == 1:
+                pos_count += 1
+            total_count += 1
+            if label == 1:
+                precision_at_i += (pos_count / total_count)
+            #print(f'label:{label}, pos_count:{pos_count}, total_count:{total_count}, precision_at_i:{precision_at_i}')
+        precision_at_i /= pos_count
+        return precision_at_i
+
+    def overall(self):
+        if self.scores.numel() == 0:
+            return 0
+        scores = self.scores.cpu().numpy()
+        targets = self.targets.cpu().numpy()
+        targets[targets == -1] = 0
+        return self.evaluation(scores, targets)
+
+    def overall_topk(self, k):
+        targets = self.targets.cpu().numpy()
+        targets[targets == -1] = 0
+        n, c = self.scores.size()
+        scores = np.zeros((n, c)) - 1
+        index = self.scores.topk(k, 1, True, True)[1].cpu().numpy()
+        tmp = self.scores.cpu().numpy()
+        for i in range(n):
+            for ind in index[i]:
+                scores[i, ind] = 1 if tmp[i, ind] >= 0 else -1
+        return self.evaluation(scores, targets)
+
+
+    def evaluation(self, scores_, targets_):
+        n, n_class = scores_.shape
+        Nc, Np, Ng = np.zeros(n_class), np.zeros(n_class), np.zeros(n_class)
+        for k in range(n_class):
+            scores = scores_[:, k]
+            print('scores', scores)
+            targets = targets_[:, k]
+            targets[targets == -1] = 0
+            Ng[k] = np.sum(targets == 1)
+            Np[k] = np.sum(scores > 0.5)
+            Nc[k] = np.sum(targets * (scores > 0.5))
+        Np[Np == 0] = 1
+        print('Np', Np)
+        OP = np.sum(Nc) / np.sum(Np)
+        OR = np.sum(Nc) / np.sum(Ng)
+        OF1 = (2 * OP * OR) / (OP + OR + TOL)
+
+        CP = np.sum(Nc / Np) / n_class
+        CR = np.sum(Nc / Ng) / n_class
+        CF1 = (2 * CP * CR) / (CP + CR + TOL)
+        return OP * 100, OR * 100, OF1 * 100, CP * 100, CR * 100, CF1 * 100

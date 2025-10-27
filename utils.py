@@ -247,7 +247,7 @@ def store_results(
     cols = [
         'dataset', 'noise_type', 'noise_rate', 'run_index', 'img_encoder',
         'data_split', 'epoch', 'pre_model', 'pre_uid', 'post_model', 'post_uid', 
-        'hloss', 'rloss', 'macro_f1', 'micro_f1', 'mAP', 
+        'macro_f1', 'micro_f1', 'macro_mAP', 'micro_mAP',
         'lr', 'batch_size', # For hyper param tuning
     ]
     filtered_dict = {k: result_dict[k] for k in cols if k in result_dict}
