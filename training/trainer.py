@@ -87,8 +87,7 @@ class Trainer:
             print(f'Epoch {epoch}')
             train_loss = self.train_one_epoch(
                 train_loader, val_loader, test_loader, epoch=epoch
-            )
-            torch.cuda.empty_cache()
+            ) 
               
             if self.train_on_val: 
                 assert clean_set_loader is not None 
@@ -486,14 +485,14 @@ class VAETrainer(Trainer):
         self.model.eval()
         if sample_type == 'sample': 
             y = 0.
-            n_samples = kwargs.get('n_samples', 5)
+            n_samples = kwargs.get('n_samples', 8)
             for i in range(n_samples):
                 target = torch.bernoulli(target_dist)  
                 y0 = self.model(data, target)['y'] 
                 y += y0 / n_samples  
         elif sample_type == 'mean':
             y = 0.
-            n_samples = kwargs.get('n_samples', 5)
+            n_samples = kwargs.get('n_samples', 8)
             for i in range(n_samples):
                 y += self.model(data, target_dist)['y'] / n_samples
         else:
