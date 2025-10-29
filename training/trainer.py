@@ -60,22 +60,7 @@ class Trainer:
         self.eval_test_at_final_loop_only = eval_test_at_final_loop_only
         
         self.metric_storing_path = metric_storing_path
-
-        # self.log_dir = Path('runs')
-        # self.log_dir.mkdir(parents=True, exist_ok=True)
-        # if 'pretrained_clf' in self.arg_dict:
-        #     self.log_dir /= f'{self.arg_dict["post_model"]}'
-
-        # self.log_dir /= (
-        #     f'{self.arg_dict["clf_name"]}_'
-        #     f'{self.arg_dict["dataset"]}_'
-        #     f'{self.arg_dict["noise_type"]}_'
-        #     f'{self.arg_dict["noise_rate"]}_'
-        #     f'{self.arg_dict["img_encoder"]}_'
-        #     f'ep{self.arg_dict["n_train_epoch"]}_'
-        #     f'rd{self.arg_dict["run_index"]}'
-        # )
-
+  
         self.res_path = Path(self.arg_dict['result_dir']) / (
             f'./{self.arg_dict["dataset"]}_{self.arg_dict["noise_type"]}_'
             f'{self.arg_dict["noise_rate"]}_{self.arg_dict["img_encoder"]}_'
@@ -83,7 +68,7 @@ class Trainer:
         )
 
         # self.cur_loss = torch.tensor(1e10)
-        self.metric = 0
+        self.metric = 0.0
         # self.patience_count = 0
         self.best_ep = 0
  
@@ -104,9 +89,7 @@ class Trainer:
                 train_loader, val_loader, test_loader, epoch=epoch
             )
             torch.cuda.empty_cache()
-            
-            # writer.add_scalar('training loss', train_loss, epoch)
-       
+              
             if self.train_on_val: 
                 assert clean_set_loader is not None 
                 self.train_on_val_one_epoch(clean_set_loader)   
@@ -131,17 +114,14 @@ class Trainer:
 
         # It seems sufficient to not use the patience as it may always be unused in most cases.
         if val_loader is not None: #and self.arg_dict['patience'] > self.patentice_count: #====> This seems a bit buggy 
-            v_batch = test(self, val_loader, nn.BCELoss())
-            # for key, item in v_batch.items():
-            #     writer.add_scalar(f'validation {key}', item, epoch)
+            v_batch = test(self, val_loader, nn.BCELoss(reduction='mean')) 
 
             if verbose:
-                print_metric('val', v_batch)
-
-            # utils.store_results({**v_batch, **self.arg_dict, 'epoch': epoch, 'data_split': 'val'})
+                print_metric('val', v_batch) 
  
-            if v_batch['micro_f1'] >= self.metric:
-                self.metric = v_batch['micro_f1'] 
+            v = v_batch['micro_f1']  
+            if v >= self.metric:
+                self.metric = v
                 self.best_ep = epoch
                 self.save_model(self.arg_dict, self.res_path)
                 # self.tmp_model = deepcopy(self.model).cpu()
@@ -155,15 +135,11 @@ class Trainer:
                 self.model.load_state_dict(
                     torch.load(self.res_path / f'{self.uid}.pth', weights_only=True)
                 )
-
-                # self.model = self.tmp_model.to(self.device)
+ 
                 t_batch = test(self, test_loader, nn.BCELoss())
             else:
                 return 
-
-            # for key, item in t_batch.items():
-            #     writer.add_scalar(f'test {key}', item, epoch)
-                
+ 
             if verbose:
                 print_metric('test', t_batch)
                 print('best epoch:', self.best_ep)
@@ -222,14 +198,10 @@ class Trainer:
         path.mkdir(parents=True, exist_ok=True)
 
         torch.save(
-            self.model.cpu().state_dict(), 
-            path / f'{self.uid}.pth'
+            self.model.state_dict(), path / f'{self.uid}.pth'
         )
         with open(path / f'{self.uid}.json', 'wt') as f:
             json.dump(arg_dict, f, indent=4)
-        # Back to GPU in case keep training
-        self.model.to(self.device)
-
 
 
 class HLCTrainer(Trainer):
