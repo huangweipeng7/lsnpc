@@ -18,6 +18,16 @@ from typing import Callable, Dict, Union
 from metrics import test
 
 
+def print_metric(data_type, batch):
+    print(
+        f"{data_type} loss: {batch['loss']:.4f}, "
+        f"macro f1: {batch['macro_f1']:.4f}, "
+        f"micro f1: {batch['micro_f1']:.4f}, "
+        f"macro mAP: {batch['macro_mAP']:.4f}, "
+        f"micro mAP: {batch['micro_mAP']:.4f}"
+    )
+
+
 class Trainer:
     def __init__(
         self,
@@ -50,29 +60,16 @@ class Trainer:
         self.eval_test_at_final_loop_only = eval_test_at_final_loop_only
         
         self.metric_storing_path = metric_storing_path
-
-        self.log_dir = Path('runs')
-        self.log_dir.mkdir(parents=True, exist_ok=True)
-        if 'pretrained_clf' in self.arg_dict:
-            self.log_dir /= f'{self.arg_dict["post_model"]}'
-
-        self.log_dir /= (
-            f'{self.arg_dict["clf_name"]}_'
-            f'{self.arg_dict["dataset"]}_'
-            f'{self.arg_dict["noise_type"]}_'
-            f'{self.arg_dict["noise_rate"]}_'
-            f'{self.arg_dict["img_encoder"]}_'
-            f'ep{self.arg_dict["n_train_epoch"]}_'
-            f'rd{self.arg_dict["run_index"]}'
-        )
-
+  
         self.res_path = Path(self.arg_dict['result_dir']) / (
             f'./{self.arg_dict["dataset"]}_{self.arg_dict["noise_type"]}_'
             f'{self.arg_dict["noise_rate"]}_{self.arg_dict["img_encoder"]}_'
             f'ep{self.arg_dict["n_train_epoch"]}_rd{self.arg_dict["run_index"]}/'
         )
- 
-        self.metric = 0 
+
+        # self.cur_loss = torch.tensor(1e10)
+        self.metric = 0.0
+        # self.patience_count = 0
         self.best_ep = 0
  
     def train_model(
@@ -90,14 +87,11 @@ class Trainer:
             print(f'Epoch {epoch}')
             train_loss = self.train_one_epoch(
                 train_loader, val_loader, test_loader, epoch=epoch
-            )
-            torch.cuda.empty_cache()
-            
-            # writer.add_scalar('training loss', train_loss, epoch)
-       
+            ) 
+              
             if self.train_on_val: 
                 assert clean_set_loader is not None 
-                self.train_on_val_one_epoch(clean_set_loader)  
+                self.train_on_val_one_epoch(clean_set_loader)   
 
             self.eval_and_save(
                 epoch, n_epochs, val_loader, test_loader, verbose
@@ -119,19 +113,14 @@ class Trainer:
 
         # It seems sufficient to not use the patience as it may always be unused in most cases.
         if val_loader is not None: #and self.arg_dict['patience'] > self.patentice_count: #====> This seems a bit buggy 
-            v_batch = test(self, val_loader, nn.BCELoss()) 
+            v_batch = test(self, val_loader, nn.BCELoss(reduction='mean')) 
 
             if verbose:
-                print(
-                    f"val loss: {v_batch['loss']:.4f}, rloss: {v_batch['rloss']:.4f}, " 
-                    f"macro f1: {v_batch['macro_f1']:.4f}, micro f1: {v_batch['micro_f1']:.4f}, "
-                    f"mAP: {v_batch['mAP']:.4f}"
-                )
-
-            # utils.store_results({**v_batch, **self.arg_dict, 'epoch': epoch, 'data_split': 'val'})
+                print_metric('val', v_batch) 
  
-            if v_batch['micro_f1'] >= self.metric:
-                self.metric = v_batch['micro_f1'] 
+            v = v_batch['micro_f1']  
+            if v >= self.metric:
+                self.metric = v
                 self.best_ep = epoch
                 self.save_model(self.arg_dict, self.res_path)
                 # self.tmp_model = deepcopy(self.model).cpu()
@@ -151,11 +140,7 @@ class Trainer:
                 return 
  
             if verbose:
-                print(
-                    f"test loss: {t_batch['loss']:.4f}, rloss: {t_batch['rloss']:.4f}, "  
-                    f"macro f1: {t_batch['macro_f1']:.4f}, micro f1: {t_batch['micro_f1']:.4f}, "
-                    f"mAP: {t_batch['mAP']:.4f}"
-                )
+                print_metric('test', t_batch)
                 print('best epoch:', self.best_ep)
                 
             utils.store_results(
@@ -212,13 +197,10 @@ class Trainer:
         path.mkdir(parents=True, exist_ok=True)
 
         torch.save(
-            self.model.cpu().state_dict(), 
-            path / f'{self.uid}.pth'
+            self.model.state_dict(), path / f'{self.uid}.pth'
         )
         with open(path / f'{self.uid}.json', 'wt') as f:
             json.dump(arg_dict, f, indent=4)
-        # Back to GPU in case keep training
-        self.model.to(self.device)
 
 
 class MCMTrainer(Trainer):
@@ -432,17 +414,15 @@ class HLCTrainer(Trainer):
         n_epochs,
         train_loader, 
         val_loader=None,
-        test_loader=None, 
-        log_dir=None,
+        test_loader=None,  
         verbose=False
     ):  
         print(f'self.uid: {self.uid}')
-        writer = SummaryWriter(
-            log_dir=self.log_dir,
-            filename_suffix=self.uid
-        )
-
-        print('there')
+        # writer = SummaryWriter(
+        #     log_dir=self.log_dir,
+        #     filename_suffix=self.uid
+        # )
+ 
         # Original labels
         self.labels = []
         for batch in tqdm.tqdm(train_loader):
@@ -463,7 +443,9 @@ class HLCTrainer(Trainer):
                     train_loader,
                     val_loader,
                     test_loader,
-                ) 
+                )
+            
+            # writer.add_scalar('training loss', train_loss, ep)
                 
             self.eval_and_save(ep, n_epochs, val_loader, test_loader, verbose)
 
@@ -483,7 +465,8 @@ class HLCTrainer(Trainer):
         n_runs = 0
         for i, batch in enumerate(pbar:=tqdm.tqdm(train_loader)): 
             data, target = (
-                batch['data'].to(self.device),  
+                batch['data'].to(self.device), 
+                #batch['labels'].float().to(self.device) 
                 torch.tensor(self.labels[i], dtype=torch.float32, device=self.device)
             )      
             self.optimizer.zero_grad()
@@ -557,9 +540,7 @@ class HLCTrainer(Trainer):
 
             corrected_targets.append(corrected_labels_batch)
 
-            pbar.set_description(f'training loss: {loss_all/n_runs:.4f} -- ' 
-                                  f'HLC (delta={delta:.4f}) corrected '
-                                  f'{corrected_num}/{pred.size(0)}')
+            pbar.set_description(f'training loss: {loss_all/n_runs:.4f} -- HLC (delta={delta}) corrected {corrected_num}/{pred.size(0)}')
         return loss_all / n_runs, corrected_targets, corrected_num
 
     @torch.no_grad()
@@ -617,6 +598,7 @@ class VAETrainer(Trainer):
     
             target_dist = self.get_target(batch)
             target = torch.bernoulli(target_dist)   
+            # target = target_dist.round().int() 
 
             self.optimizer.zero_grad()
   
@@ -644,13 +626,15 @@ class VAETrainer(Trainer):
         # bce = nn.BCELoss()
         for batch in (pbar:=tqdm.tqdm(train_loader)):
             data = batch['data'].to(self.device) 
-            target = batch['labels'].to(self.device).float()  
-
+            target = batch['labels'].to(self.device).float() 
+            
+            # target_hat_dist = self.get_target(batch)
+            # target_hat = target_hat_dist.round().int() 
             target_hat = torch.bernoulli(self.get_target(batch))   
 
             self.optimizer.zero_grad() 
             
-            y_pred = self.model(data, target_hat, target)  
+            y_pred = self.model(data, target_hat, target) #['y'] 
             loss = self.loss_fn(y_pred, target_hat, target)  
 
             loss.backward()
@@ -675,14 +659,14 @@ class VAETrainer(Trainer):
         self.model.eval()
         if sample_type == 'sample': 
             y = 0.
-            n_samples = kwargs.get('n_samples', 5)
+            n_samples = kwargs.get('n_samples', 8)
             for i in range(n_samples):
                 target = torch.bernoulli(target_dist)  
                 y0 = self.model(data, target)['y'] 
                 y += y0 / n_samples  
         elif sample_type == 'mean':
             y = 0.
-            n_samples = kwargs.get('n_samples', 5)
+            n_samples = kwargs.get('n_samples', 8)
             for i in range(n_samples):
                 y += self.model(data, target_dist)['y'] / n_samples
         else:
@@ -705,7 +689,68 @@ class VAETrainer(Trainer):
         return F.sigmoid(
             out if not isinstance(out, tuple) else out[0]
         )
+
+    # @torch.no_grad()
+    # def eval_and_save(
+    #     self,  
+    #     writer: SummaryWriter, 
+    #     epoch: int, 
+    #     n_epochs: int, 
+    #     val_loader: DataLoader = None,
+    #     test_loader: DataLoader = None, 
+    #     verbose: bool = False
+    # ): 
+    #     self.eval()
+
+    #     if not self.train_on_val:
+    #         # It seems sufficient to not use the patience as it may always be unused in most cases.
+    #         if val_loader is not None: #and self.arg_dict['patience'] > self.patentice_count: #====> This seems a bit buggy 
+    #             v_batch = test(self, val_loader, nn.BCELoss())
+    #             # for key, item in v_batch.items():
+    #             #     writer.add_scalar(f'validation {key}', item, epoch)
+
+    #             if verbose:
+    #                 print(
+    #                     f"val loss: {v_batch['loss']:.4f}, rloss: {v_batch['rloss']:.4f}, " 
+    #                     f"macro f1: {v_batch['macro_f1']:.4f}, micro f1: {v_batch['micro_f1']:.4f}, "
+    #                     f"mAP: {v_batch['mAP']:.4f}"
+    #                 )
+
+    #             if v_batch['micro_f1'] >= self.metric:
+    #                 self.metric = v_batch['micro_f1']
+    #                 self.save_model(self.arg_dict, self.res_path) 
+
+    #     elif epoch == n_epochs - 1:
+    #         self.save_model(self.arg_dict, self.res_path) 
+
+    #     if test_loader is not None:
+    #         if not self.eval_test_at_final_loop_only:
+    #             t_batch = test(self, test_loader, nn.BCELoss())
+    #             # for key, item in t_batch.items():
+    #             #     writer.add_scalar(f'test {key}', item, epoch)
  
+    #         elif epoch == n_epochs - 1:
+    #             # Test at the last epoch
+    #             # Load the checkpoint we stored 
+    #             self.model.load_state_dict(
+    #                 torch.load(self.res_path / f'{self.uid}.pth', weights_only=True)
+    #             )
+
+    #             t_batch = test(self, test_loader, nn.BCELoss())
+    #             # for key, item in t_batch.items():
+    #             #     writer.add_scalar(f'test {key}', item, epoch)
+    #         else:
+    #             return 
+
+    #         if verbose:
+    #             print(
+    #                 f"test loss: {t_batch['loss']:.4f}, rloss: {t_batch['rloss']:.4f}, " 
+    #                 f"macro f1: {t_batch['macro_f1']:.4f}, micro f1: {t_batch['micro_f1']:.4f}, "
+    #                 f"mAP: {t_batch['mAP']:.4f}"
+    #             )
+
+    #         utils.store_results({**t_batch, **self.arg_dict, 'epoch': epoch, 'data_split': 'test'})
+
 
 class KNNTrainer:
     def __init__(
@@ -714,6 +759,7 @@ class KNNTrainer:
         pretrained_clf: nn.Module,
         model: KNeighborsClassifier,
         arg_dict: Dict,
+        metric_storing_path: str,
         encoder = None,
     ):
 
@@ -726,10 +772,12 @@ class KNNTrainer:
 
         self.encoder = encoder
         
-        if 'pretrained_clf' in self.arg_dict:
-            self.log_dir = f'runs/{self.arg_dict["post_model"]}_{self.arg_dict["clf_name"]}_{self.arg_dict["dataset"]}_{self.arg_dict["run_index"]}'
-        else:
-            self.log_dir = f'runs/{self.arg_dict["clf_name"]}_{self.arg_dict["dataset"]}_{self.arg_dict["run_index"]}'
+        self.metric_storing_path = metric_storing_path
+        
+        # if 'pretrained_clf' in self.arg_dict:
+        #     self.log_dir = f'runs/{self.arg_dict["post_model"]}_{self.arg_dict["clf_name"]}_{self.arg_dict["dataset"]}_{self.arg_dict["run_index"]}'
+        # else:
+        #     self.log_dir = f'runs/{self.arg_dict["clf_name"]}_{self.arg_dict["dataset"]}_{self.arg_dict["run_index"]}'
 
         self.models = []
         for i in range(self.n_labels):
@@ -743,10 +791,10 @@ class KNNTrainer:
         verbose: bool = False,
     ):  
         print(f'self.uid: {self.uid}')
-        writer = SummaryWriter(
-            log_dir=self.log_dir,
-            filename_suffix=self.uid
-        )
+        # writer = SummaryWriter(
+        #     log_dir=self.log_dir,
+        #     filename_suffix=self.uid
+        # )
 
         self.pretrained_clf.to(self.device)
         embeddings = []
@@ -805,14 +853,16 @@ class KNNTrainer:
         data = batch['data'].to(self.device) 
         with torch.no_grad():
             emb = self.encoder(data)
+            #res = torch.tensor(self.model.predict(emb)).float()
             res = []
             for i in range(self.n_labels):
                 res.append(self.models[i].predict(emb))
-            res = np.array(res).T 
-
+            res = np.array(res).T
+            # print(res[:5])
             clf_res = self.pretrained_clf(data)
             if isinstance(clf_res, tuple):
-                clf_res = clf_res[0] 
+                clf_res = clf_res[0]
+            # print(torch.sigmoid(clf_res).round())
             return torch.tensor(res).float()
 
     def eval_and_save(
@@ -825,30 +875,28 @@ class KNNTrainer:
         self.eval()
 
         if val_loader is not None:
-            v_batch = test(self, val_loader, nn.BCELoss()) 
+            v_batch = test(self, val_loader, nn.BCELoss())
+            # for key, item in v_batch.items():
+            #     writer.add_scalar(f'validation {key}', item, ep)
 
             if verbose:
-                print(
-                    f"val loss: {v_batch['loss']:.4f}, rloss: {v_batch['rloss']:.4f}, " 
-                    f"macro f1: {v_batch['macro_f1']:.4f}, micro f1: {v_batch['micro_f1']:.4f}, "
-                    f"mAP: {v_batch['mAP']:.4f}"
-                )
+                print_metric('val', v_batch)
 
-            utils.store_results({**v_batch, **self.arg_dict, 'epoch': ep, 'data_split': 'val'})
+            utils.store_results(
+                {**v_batch, **self.arg_dict, 'epoch': ep, 'data_split': 'val'}, 
+                self.metric_storing_path
+            )
 
         if test_loader is not None:
-            t_batch = test(self, test_loader, nn.BCELoss())
-            # for key, item in t_batch.items():
-            #     writer.add_scalar(f'test {key}', item, ep)
+            t_batch = test(self, test_loader, nn.BCELoss()) 
                 
             if verbose:
-                print(
-                    f"test loss: {t_batch['loss']:.4f}, rloss: {t_batch['rloss']:.4f}, " 
-                    f"macro f1: {t_batch['macro_f1']:.4f}, micro f1: {t_batch['micro_f1']:.4f}, "
-                    f"mAP: {v_batch['mAP']:.4f}"
-                )
+                print_metric('test', t_batch)
 
-            utils.store_results({**t_batch, **self.arg_dict, 'epoch': ep, 'data_split': 'test'})
+            utils.store_results(
+                {**t_batch, **self.arg_dict, 'epoch': ep, 'data_split': 'test'}, 
+                self.metric_storing_path
+            )
     
 
 class NPCModTrainer(VAETrainer):
@@ -879,19 +927,16 @@ class NPCModTrainer(VAETrainer):
             metric_storing_path=metric_storing_path
         )
 
-        self.log_dir /= (
-            'npc_mod_'
-            f'{self.arg_dict["clf_name"]}_'
-            f'{self.arg_dict["dataset"]}_'
-            f'{self.arg_dict["noise_type"]}_'
-            f'{self.arg_dict["noise_rate"]}_'
-            f'{self.arg_dict["img_encoder"]}_'
-            f'ep{self.arg_dict["n_train_epoch"]}_'
-            f'rd{self.arg_dict["run_index"]}'
-        )
-        self.sw_train = SummaryWriter(log_dir=self.log_dir / 'training', filename_suffix=self.uid)
-        self.sw_val = SummaryWriter(log_dir=self.log_dir /  'validation', filename_suffix=self.uid)
-        self.sw_test = SummaryWriter(log_dir=self.log_dir / 'test', filename_suffix=self.uid)
+        # self.log_dir /= (
+        #     'npc_mod_'
+        #     f'{self.arg_dict["clf_name"]}_'
+        #     f'{self.arg_dict["dataset"]}_'
+        #     f'{self.arg_dict["noise_type"]}_'
+        #     f'{self.arg_dict["noise_rate"]}_'
+        #     f'{self.arg_dict["img_encoder"]}_'
+        #     f'ep{self.arg_dict["n_train_epoch"]}_'
+        #     f'rd{self.arg_dict["run_index"]}'
+        # )
 
         self.grad_norm = grad_norm 
 
@@ -996,9 +1041,10 @@ class NPCModTrainer(VAETrainer):
         test_loader: DataLoader = None, 
         verbose: bool = False
     ): 
-        self.eval() 
-        
-        if val_loader is not None:  
+        self.eval()
+ 
+        # It seems sufficient to not use the patience as it may always be unused in most cases.
+        if val_loader is not None: #and self.arg_dict['patience'] > self.patentice_count: #====> This seems a bit buggy 
             v_batch = test(self, val_loader, nn.BCELoss())
             for key, item in v_batch.items():
                 self.sw_val.add_scalar(f'{key}', item, epoch)
@@ -1009,8 +1055,7 @@ class NPCModTrainer(VAETrainer):
                     f"macro f1: {v_batch['macro_f1']:.4f}, micro f1: {v_batch['micro_f1']:.4f}, "
                     f"mAP: {v_batch['mAP']:.4f}"
                 )
-
-            print('hah?')
+ 
             utils.store_results(
                 {**v_batch, **self.arg_dict, 'epoch': epoch, 'data_split': 'val'},
                 self.metric_storing_path

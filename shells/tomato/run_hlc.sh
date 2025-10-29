@@ -21,7 +21,7 @@ do
 		--epoch_update_start 5 \
 		--noisy_val true \
 		--n_train_epoch 40 \
-		--n_repeats 5 \
+		--n_repeats 1 \
 		--eval_test_at_final_loop_only true \
 		--noisy_val false \
 		--seed 100 
@@ -49,7 +49,7 @@ do
 		--epoch_update_start 5 \
 		--noisy_val true \
 		--n_train_epoch 40 \
-		--n_repeats 5 \
+		--n_repeats 1 \
 		--eval_test_at_final_loop_only true \
 		--noisy_val false \
 		--seed 100 

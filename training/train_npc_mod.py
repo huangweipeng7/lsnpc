@@ -108,7 +108,14 @@ def train_mlnlc(run_index=0):
         encoder = resnet50(weights=ResNet50_Weights.DEFAULT)
         encoder = torch.nn.Sequential(*(list(encoder.children())[:-1]))
         encoder.fc = nn.Flatten()
-        emb_size = 2048 
+        emb_size = 2048
+    elif model_args.img_encoder == 'vit224':
+        encoder = ViTModelWrapper(
+            ViTModel.from_pretrained(
+                'local_models/vit224', local_files_only=True
+            )
+        )
+        emb_size = 768
     elif model_args.img_encoder == 'levit':
         encoder = ViTModelWrapper(
             LevitModel.from_pretrained(
