@@ -127,15 +127,9 @@ def train_clf():
         else:
             raise Exception('Image feature encoder is not defined...')
 
-        if model_args.clf_name == 'mlclf': 
-            model = MultilabelClassifier(encoder, emb_size, n_labels)
-        elif model_args.clf_name == 'addgcn':
-            model = hlc.get_model(n_labels)
-        elif model_args.clf_name == 'hlc':
-            model = hlc.get_model(n_labels)
-        else:
-            raise Exception('Not recognized classifier')
-        summary(model, (3,224,224), device='cpu')
+        model = MultilabelClassifier(encoder, emb_size, n_labels)
+
+        # summary(model, (3,224,224), device='cpu')
 
         optimizer = torch.optim.Adam(
             model.parameters(),

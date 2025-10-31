@@ -59,15 +59,15 @@ class Trainer:
 
         self.eval_test_at_final_loop_only = eval_test_at_final_loop_only
         
-        self.metric_storing_path = metric_storing_path
+        self.metric_storing_path = Path(metric_storing_path)
+        self.metric_storing_path.parent.mkdir(parents=True, exist_ok=True)
   
         self.res_path = Path(self.arg_dict['result_dir']) / (
             f'./{self.arg_dict["dataset"]}_{self.arg_dict["noise_type"]}_'
             f'{self.arg_dict["noise_rate"]}_{self.arg_dict["img_encoder"]}_'
             f'ep{self.arg_dict["n_train_epoch"]}_rd{self.arg_dict["run_index"]}/'
         )
-
-        # self.cur_loss = torch.tensor(1e10)
+ 
         self.metric = 0.0
         # self.patience_count = 0
         self.best_ep = 0
@@ -261,62 +261,62 @@ class MCMTrainer(Trainer):
             if self.lr_scheduler is not None: 
                 self.lr_scheduler.step()
 
-    @torch.no_grad()
-    def eval_and_save(
-        self,   
-        epoch: int, 
-        n_epochs: int, 
-        val_loader: DataLoader = None,
-        test_loader: DataLoader = None, 
-        verbose: bool = False
-    ): 
-        self.eval()
+    # @torch.no_grad()
+    # def eval_and_save(
+    #     self,   
+    #     epoch: int, 
+    #     n_epochs: int, 
+    #     val_loader: DataLoader = None,
+    #     test_loader: DataLoader = None, 
+    #     verbose: bool = False
+    # ): 
+    #     self.eval()
 
-        # It seems sufficient to not use the patience as it may always be unused in most cases.
-        if val_loader is not None: #and self.arg_dict['patience'] > self.patentice_count: #====> This seems a bit buggy 
-            v_batch = test(self, val_loader, nn.BCELoss()) 
+    #     # It seems sufficient to not use the patience as it may always be unused in most cases.
+    #     if val_loader is not None: #and self.arg_dict['patience'] > self.patentice_count: #====> This seems a bit buggy 
+    #         v_batch = test(self, val_loader, nn.BCELoss()) 
 
-            if verbose:
-                print(
-                    f"val loss: {v_batch['loss']:.4f}, rloss: {v_batch['rloss']:.4f}, " 
-                    f"macro f1: {v_batch['macro_f1']:.4f}, micro f1: {v_batch['micro_f1']:.4f}, "
-                    f"mAP: {v_batch['mAP']:.4f}"
-                )
+    #         if verbose:
+    #             print(
+    #                 f"val loss: {v_batch['loss']:.4f}, rloss: {v_batch['rloss']:.4f}, " 
+    #                 f"macro f1: {v_batch['macro_f1']:.4f}, micro f1: {v_batch['micro_f1']:.4f}, "
+    #                 f"mAP: {v_batch['mAP']:.4f}"
+    #             )
 
-            # utils.store_results({**v_batch, **self.arg_dict, 'epoch': epoch, 'data_split': 'val'})
+    #         # utils.store_results({**v_batch, **self.arg_dict, 'epoch': epoch, 'data_split': 'val'})
  
-            if v_batch['micro_f1'] >= self.metric:
-                self.metric = v_batch['micro_f1'] 
-                self.best_ep = epoch
-                self.save_model(self.arg_dict, self.res_path)
-                # self.tmp_model = deepcopy(self.model).cpu()
+    #         if v_batch['micro_f1'] >= self.metric:
+    #             self.metric = v_batch['micro_f1'] 
+    #             self.best_ep = epoch
+    #             self.save_model(self.arg_dict, self.res_path)
+    #             # self.tmp_model = deepcopy(self.model).cpu()
 
-        if test_loader is not None:
-            if not self.eval_test_at_final_loop_only:
-                t_batch = test(self, test_loader, nn.BCELoss()) 
-            elif epoch == n_epochs - 1:
-                # Test at the last epoch
-                # Load the checkpoint we stored 
-                self.model.load_state_dict(
-                    torch.load(self.res_path / f'{self.uid}.pth', weights_only=True)
-                )
+    #     if test_loader is not None:
+    #         if not self.eval_test_at_final_loop_only:
+    #             t_batch = test(self, test_loader, nn.BCELoss()) 
+    #         elif epoch == n_epochs - 1:
+    #             # Test at the last epoch
+    #             # Load the checkpoint we stored 
+    #             self.model.load_state_dict(
+    #                 torch.load(self.res_path / f'{self.uid}.pth', weights_only=True)
+    #             )
  
-                t_batch = test(self, test_loader, nn.BCELoss())
-            else:
-                return 
+    #             t_batch = test(self, test_loader, nn.BCELoss())
+    #         else:
+    #             return 
  
-            if verbose:
-                print(
-                    f"test loss: {t_batch['loss']:.4f}, rloss: {t_batch['rloss']:.4f}, "  
-                    f"macro f1: {t_batch['macro_f1']:.4f}, micro f1: {t_batch['micro_f1']:.4f}, "
-                    f"mAP: {t_batch['mAP']:.4f}"
-                )
-                print('best epoch:', self.best_ep)
+    #         if verbose:
+    #             print(
+    #                 f"test loss: {t_batch['loss']:.4f}, rloss: {t_batch['rloss']:.4f}, "  
+    #                 f"macro f1: {t_batch['macro_f1']:.4f}, micro f1: {t_batch['micro_f1']:.4f}, "
+    #                 f"mAP: {t_batch['mAP']:.4f}"
+    #             )
+    #             print('best epoch:', self.best_ep)
                 
-            utils.store_results(
-                {**t_batch, **self.arg_dict, 'epoch': epoch, 'data_split': 'test'},
-                self.metric_storing_path
-            )
+    #         utils.store_results(
+    #             {**t_batch, **self.arg_dict, 'epoch': epoch, 'data_split': 'test'},
+    #             self.metric_storing_path
+    #         )
  
     def train_one_epoch(
         self, 
@@ -355,27 +355,7 @@ class MCMTrainer(Trainer):
         data = batch['data'].to(self.device)
         y, _ = self.model(data)
         return F.sigmoid(y)
-
-    def eval(self):
-        self.model.eval()
-
-    def train(self):
-        self.model.train()
-
-    def save_model(self, arg_dict: Dict, path: Union[str, Path]):
-        # Save the model
-        path = Path(path)  
-        path.mkdir(parents=True, exist_ok=True)
-
-        torch.save(
-            self.model.cpu().state_dict(), 
-            path / f'{self.uid}.pth'
-        )
-        with open(path / f'{self.uid}.json', 'wt') as f:
-            json.dump(arg_dict, f, indent=4)
-        # Back to GPU in case keep training
-        self.model.to(self.device)
-
+ 
 
 class HLCTrainer(Trainer):
     def __init__(

@@ -98,9 +98,7 @@ def train_clf():
         # Time added after the uid is created
         arg_dict['time'] = datetime.now().strftime("%Y%m%d_%H_%M_%S")
 
-        if model_args.img_encoder == 'resnet50':
-            # Using 0.1.0
-            #encoder = resnet50(pretrained=True)
+        if model_args.img_encoder == 'resnet50': 
             encoder = resnet50(weights=ResNet50_Weights.DEFAULT)
             encoder = torch.nn.Sequential(*(list(encoder.children())[:-1]))
             encoder.fc = nn.Flatten()
@@ -115,16 +113,8 @@ def train_clf():
         else:
             raise Exception('Image feature encoder is not defined...')
 
-        if model_args.clf_name == 'mlmcm': 
-            model = MCMClassifier(encoder, emb_size, n_labels)
-        elif model_args.clf_name == 'addgcn':
-            model = hlc.get_model(n_labels)
-        elif model_args.clf_name == 'hlc':
-            model = hlc.get_model(n_labels)
-        else:
-            raise Exception('Not recognized classifier')
-        #summary(model, (3,224,224), device='cpu')
-
+        model = MCMClassifier(encoder, emb_size, n_labels)
+ 
         optimizer = torch.optim.Adam(
             model.parameters(),
             lr=train_args.lr,
@@ -142,6 +132,7 @@ def train_clf():
             lr_scheduler=lr_scheduler,
             device=get_device(),
             arg_dict=arg_dict,
+            metric_storing_path=f"./results/{arg_dict['dataset']}_results.csv",
             eval_test_at_final_loop_only=train_args.eval_test_at_final_loop_only
         )
 
