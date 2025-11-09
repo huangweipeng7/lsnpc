@@ -1,3 +1,5 @@
+
+from cv2 import transform
 import numpy as np
 import json
 import torch
@@ -7,15 +9,21 @@ import torch.nn.functional as F
 import tqdm
 import utils
 import sklearn
+import random
+
 
 from copy import deepcopy
 from pathlib import Path
 from sklearn.neighbors import KNeighborsClassifier
+from sklearn.mixture import GaussianMixture
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
+from torchvision import transforms
+from torchvision.transforms import ToPILImage
 from typing import Callable, Dict, Union
 
 from metrics import test
+from utils import WithIndices
 
 
 def print_metric(data_type, batch):
@@ -140,8 +148,8 @@ class Trainer:
 
             # utils.store_results({**v_batch, **self.arg_dict, 'epoch': epoch, 'data_split': 'val'})
  
-            if v_batch['micro_f1'] >= self.metric:
-                self.metric = v_batch['micro_f1'] 
+            if v_batch['macro_f1'] >= self.metric:
+                self.metric = v_batch['macro_f1'] 
                 self.best_ep = epoch
                 self.save_model(self.arg_dict, self.res_path)
                 # self.tmp_model = deepcopy(self.model).cpu()
@@ -230,6 +238,539 @@ class Trainer:
         # Back to GPU in case keep training
         self.model.to(self.device)
 
+
+class BalanceMixTrainer(Trainer):
+    def __init__(
+        self,
+        n_labels,
+        model,
+        loss_fn,
+        optimizer, 
+        arg_dict,
+        lr_scheduler=None,
+        device='cpu',
+        warmup_epochs=5,
+        alpha=4.0,
+        relabel_weight=1.0, 
+        ambiguous_weight=1.0,
+        eval_test_at_final_loop_only=False,
+        metric_storing_path='./runs/results.csv'
+    ):
+        super().__init__(
+            n_labels,
+            model,
+            loss_fn,
+            optimizer, 
+            arg_dict,
+            lr_scheduler,
+            device,
+            eval_test_at_final_loop_only=eval_test_at_final_loop_only,
+            metric_storing_path=metric_storing_path
+        )
+
+        self.warmup_epochs = warmup_epochs
+        self.alpha = alpha
+        self.relabel_weight = relabel_weight
+        self.ambiguous_weight = ambiguous_weight
+
+    def train_model(
+        self, 
+        n_epochs,
+        train_loader, 
+        val_loader=None,
+        test_loader=None,  
+        verbose=False,
+        clean_set_loader: DataLoader = None
+    ):  
+        
+        self.batch_size = train_loader.batch_size
+
+        # Add indices to dataset
+        dataset = train_loader.dataset
+        self.p_clean = torch.ones(len(dataset), self.n_labels, device=self.device)
+        self.clean_mask = torch.ones(len(dataset), self.n_labels, dtype=torch.bool, device=self.device)
+        self.labels = torch.zeros(len(dataset), self.n_labels, device=self.device)
+
+        train_loader = DataLoader(
+            WithIndices(dataset),
+            batch_size=self.batch_size,
+            shuffle=True,
+            num_workers=4
+        )
+
+        # Keep updated labels across training, only useful when label refinement persists across epochs
+        for batch in train_loader:
+            batch_labels = batch['labels'].float().to(self.device)
+            batch_indices = batch['index']
+            # Assign each batch to its correct positions in self.labels
+            self.labels[batch_indices] = batch_labels
+
+        self.dataset = train_loader.dataset
+
+        for epoch in range(n_epochs):
+            print(f'Epoch {epoch}')
+
+            # Need to update before 1st epoch, different from Algorithm 1 for mixing samples
+            self.update_minority_sampling_probs(train_loader)
+
+            if epoch < self.warmup_epochs:
+                # ------------------- Warm-Up Stage -------------------
+                if epoch == 0:
+                    print('#' * 50)
+                    print("Warm-up stage (no label refinement)...")
+
+                self.train_one_epoch(
+                    train_loader,
+                    epoch=epoch,
+                    alpha=self.alpha
+                )
+            else:
+                # ------------------- Full BalanceMix Stage -------------------
+                if epoch == self.warmup_epochs: 
+                    print('#' * 50)
+                    print("Full BalanceMix stage...")
+
+                self.train_one_epoch(
+                    train_loader,
+                    epoch=epoch,
+                    alpha=self.alpha,
+                    label_refinement=True,
+                )
+
+            # Update GMMs each epoch
+            self.fit_gmms_on_training_data(train_loader)
+            
+            # Keep the same as basic Trainer
+            torch.cuda.empty_cache()
+        
+            if self.train_on_val: 
+                assert clean_set_loader is not None 
+                self.train_on_val_one_epoch(clean_set_loader)   
+
+            self.eval_and_save(
+                epoch, n_epochs, val_loader, test_loader, verbose
+            )
+
+            if self.lr_scheduler is not None: 
+                self.lr_scheduler.step()
+    
+    def train_one_epoch(
+            self, 
+            train_loader: DataLoader,
+            epoch: int,
+            alpha: float = 4.0, 
+            label_refinement: bool = False
+        ) -> float:
+        
+        self.train()
+    
+        loss_all = 0.
+        n_runs = 0
+        for batch in (pbar:=tqdm.tqdm(train_loader)):  
+            self.optimizer.zero_grad()
+
+            # Get original data and labels 
+            target = batch['labels'].float().to(self.device) 
+            # Get updated labels from self.labels
+            # target = self.labels[batch['index']].float().to(self.device)
+
+            # Label refinement
+            if label_refinement:
+                new_labels, ambiguous_mask, ratio_clean, ratio_relabel, ratio_ambiguous = \
+                    self.gmm_label_refinement_three_state(epoch, batch)
+                refined_target = new_labels.to(self.device)
+            else:
+                refined_target = target
+
+            # Sampling from two samplers and mixup
+            imgs, lbs, weights = self.balancemix_two_sampler_batch(
+                epoch,
+                batch, 
+                refined_target, 
+                alpha=alpha, 
+                label_refinement=label_refinement,
+                ambiguous_mask=ambiguous_mask if label_refinement else None
+            )
+
+            pred = self.model(imgs)
+            loss = self.weighted_bce_loss(
+                pred, 
+                lbs, 
+                weights=weights if label_refinement else None
+            )
+            # ------------------------------
+    
+            loss.backward()
+    
+            loss_all += loss.item()
+            n_runs += 1
+    
+            nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=2)
+            self.optimizer.step()
+            
+            if label_refinement:
+                pbar.set_description(
+                    f'training loss: {loss_all/n_runs:.4f} | '
+                    f'clean: {ratio_clean:.4f}, relabel: {ratio_relabel:.4f}, ambiguous: {ratio_ambiguous:.4f}'
+                )
+            else: 
+                pbar.set_description(f'training loss: {loss_all/n_runs:.4f}')
+
+        return loss_all / n_runs  
+    
+    @torch.no_grad()
+    def update_minority_sampling_probs(self, train_loader, epsilon=1e-6):
+        all_preds = []
+        all_labels = []
+        all_indices = []
+        for batch in train_loader:  # dataset wrapped with WithIndices
+            probs = self.predict(batch)
+            all_preds.append(probs)
+            all_labels.append(batch['labels'])
+            all_indices.append(batch['index'])
+
+        all_preds = torch.cat(all_preds)
+        all_indices = torch.cat(all_indices)
+        all_labels = torch.cat(all_labels).to(self.device)
+        # print('all labels:', all_labels[:10])
+        # all_labels = self.labels[all_indices].to(self.device)
+        # print('updated all labels:', all_labels[:10])
+
+        per_label_conf = all_labels * all_preds + (1 - all_labels) * (1 - all_preds)
+        score = per_label_conf.mean(dim=1)
+        hardness = 1.0 / (score + epsilon)    # Eq.4: inverse score version
+        prob_sampling = hardness / hardness.sum()
+
+        # Initialize tensor for all predictions
+        ordered_prob_sampling = torch.empty_like(prob_sampling)
+        # Place predictions in their original positions
+        ordered_prob_sampling[all_indices] = prob_sampling
+        self.prob_sampling = ordered_prob_sampling
+
+        print('Updated minority sampling probabilities.')
+
+    @torch.no_grad()
+    def gmm_label_refinement_three_state(self, epoch, batch, eps=0.975):
+        """ Returns new_labels including refined and weights for ambiguous samples """
+        self.eval()
+
+        data, target = (
+            batch['data'].to(self.device), 
+            batch['labels'].float().to(self.device) 
+            # self.labels[batch['index']].float().to(self.device)
+        )     
+
+        clean_mask = self.clean_mask[batch['index']]
+
+        # Decay eps over epochs to 0.95
+        # eps -= 0.025 * min(1.0, (epoch - self.warmup_epochs) / 20)
+
+        # Only operate on non-clean labels
+        unlabeled = ~clean_mask
+
+        # ----- Apply augmentation to each image in the batch -----
+        x_aug1 = []
+        x_aug2 = []
+
+        for i in range(data.size(0)):
+            # Apply augmentation to individual images
+            aug1 = self.rand_aug(data[i])  # x[i] is now 3D
+            aug2 = self.rand_aug(data[i])  # x[i] is now 3D
+            x_aug1.append(aug1)
+            x_aug2.append(aug2)
+    
+        # Stack back to batch format
+        x_aug1 = torch.stack(x_aug1)
+        x_aug2 = torch.stack(x_aug2)
+
+        # ----- Relabeling based on augmented ones -----
+        p1 = torch.sigmoid(self.model(x_aug1))
+        p2 = torch.sigmoid(self.model(x_aug2))
+        conf = 0.5 * (p1 + p2)
+
+        new_labels = target.clone()
+
+        # re-label to 1
+        mask1 = (conf > eps) & unlabeled
+        new_labels[mask1] = 1
+
+        # re-label to 0
+        mask0 = (conf < 1-eps) & unlabeled
+        new_labels[mask0] = 0
+
+        # ----- Ambiguous: neither clean nor re-labeled -----
+        ambiguous = unlabeled & ~(mask1 | mask0)
+
+        ratio_clean = clean_mask.float().mean().item()
+        ratio_relabel = (mask1.float().mean() + mask0.float().mean()).item()
+        ratio_ambiguous = ambiguous.float().mean().item()
+
+        # update self.labels with new_labels
+        self.labels[batch['index']] = new_labels.to(self.device)
+
+        self.train()
+        return new_labels, ambiguous, ratio_clean, ratio_relabel, ratio_ambiguous
+
+    @torch.no_grad()
+    def fit_gmms_on_training_data(self, train_loader):
+        """ Fit GMMs on the training data losses every epoch """
+        self.eval()
+
+        labels = []
+        probs = []
+        indices = []
+        for batch in train_loader:
+            labels.append(batch['labels'].float().to(self.device))
+            indices.append(batch['index'])
+            probs.append(self.predict(batch))
+        probs = torch.cat(probs, dim=0)
+        labels = torch.cat(labels, dim=0)
+        
+        indices = torch.cat(indices, dim=0)
+        # use updated self.labels
+        # labels = self.labels[indices].float().to(self.device)
+
+        loss_mat, loss_pos, loss_neg, pos_idx, neg_idx = self.compute_bce_losses(
+            probs,
+            labels
+        )
+
+        self.gmms_pos = self.fit_gmm(loss_pos)
+        self.gmms_neg = self.fit_gmm(loss_neg)
+        
+        new_p_clean = self.compute_clean_prob(loss_mat, pos_idx, neg_idx)
+        # p_clean in right positions
+        self.p_clean[indices] = new_p_clean
+
+        # Smooth update of clean probabilities
+        # if not hasattr(self, 'p_clean'):
+        #     self.p_clean = new_p_clean
+        # else:
+        #     self.p_clean = 0.9 * self.p_clean + 0.1 * new_p_clean
+
+        self.clean_mask[indices] = self.classify_labels(self.p_clean[indices])
+        print('Fitted GMMs - current clean ratio:', self.clean_mask.float().mean().item())
+
+        self.train()
+
+    def balancemix_two_sampler_batch(
+            self, 
+            epoch,
+            batch, 
+            target, 
+            alpha=4.0, 
+            label_refinement=False, 
+            ambiguous_mask=None
+        ):
+        """ Generate a batch using two-sampler Mixup strategy """
+        data = batch['data'].to(self.device)
+        
+        # batch_m, batch_d = self.sample_two_batches(epoch, batch, target, self.batch_size)
+
+        all_indices = list(range(len(target)))
+        batch_d = random.sample(all_indices, k=min(self.batch_size, len(all_indices)))
+
+        # Batch sampling with minority sampler
+        # batch_m = random.choices(
+        #     all_indices,  
+        #     weights=self.prob_sampling[batch['index']], 
+        #     k=min(self.batch_size, len(all_indices))
+        # )
+        # Global sampling with minority sampler
+        batch_m = random.choices(
+            range(len(self.dataset)),  
+            weights=self.prob_sampling, 
+            k=min(self.batch_size, len(all_indices))
+        )
+
+        # print(f"Sampled minority indices: {batch_m}")
+
+        # ----- vectorized version -----
+        # Convert indices to tensors for vectorized operations
+        # batch_m = torch.tensor(batch_m, device=self.device)
+        batch_d = torch.tensor(batch_d, device=self.device)
+        # Vectorized sampling using index_select
+        # x_m = data[batch_m]     # Shape: [batch_size, channels, height, width]
+        # y_m = target[batch_m]   # Shape: [batch_size, n_labels]
+        x_m = [self.dataset[i]['data'] for i in batch_m]     # Shape: [batch_size, channels, height, width]
+        y_m = [self.labels[i] for i in batch_m]   # Shape: [batch_size, n_labels]
+        # Convert to tensors and stack
+        x_m = torch.stack(x_m).to(self.device)
+        y_m = torch.stack(y_m).to(self.device)
+        x_d = data[batch_d]     # Shape: [batch_size, channels, height, width]
+        y_d = target[batch_d]   # Shape: [batch_size, n_labels]
+
+        # Vectorized mixing
+        images, labels, weights = self.mix_batch(
+            x_d, x_m, y_d, y_m, 
+            alpha, 
+            label_refinement, 
+            ambiguous_mask
+        )
+
+        return images, labels, weights
+    
+    @torch.no_grad()
+    def mix_batch(
+        self, 
+        x1_batch, 
+        x2_batch, 
+        y1_batch, 
+        y2_batch, 
+        alpha=4.0, 
+        label_refinement=False, 
+        ambiguous_mask=None
+    ):
+        """  Mix two batches with Mixup strategy.
+        
+        Args:
+            x1_batch: batch from random sampler
+            x2_batch: batch from minority sampler
+            y1_batch: labels for x1_batch
+            y2_batch: labels for x2_batch
+            alpha: parameter for Beta distribution
+            label_refinement: whether to compute weights for ambiguous samples
+            ambiguous_mask: mask for ambiguous samples in the batch
+
+        Returns:
+            mixed images and labels for a batch with weights for ambiguous samples
+        """
+        batch_size = x1_batch.size(0)
+        weights = None
+        
+        if alpha > 0:
+            # Generate lambda values for entire batch
+            lam_values = np.random.beta(alpha, alpha, size=batch_size)
+            # Ensure lambda >= 0.5 by taking max(lambda, 1-lambda)
+            lam_values = np.maximum(lam_values, 1 - lam_values)
+            # print('Lambda values for the batch:', lam_values)
+            lam_tensor = torch.tensor(lam_values, dtype=torch.float32, device=x1_batch.device)
+            
+            # Reshape for broadcasting: [batch_size, 1, 1, 1] for images
+            lam_img = lam_tensor.view(batch_size, 1, 1, 1)
+            # Reshape for broadcasting: [batch_size, 1] for labels
+            lam_label = lam_tensor.view(batch_size, 1)
+        else:
+            lam_img = torch.ones(batch_size, 1, 1, 1, device=x1_batch.device)
+            lam_label = torch.ones(batch_size, 1, device=x1_batch.device)
+        
+        # Vectorized mixing
+        mixed_images = lam_img * x1_batch + (1 - lam_img) * x2_batch
+        mixed_labels = lam_label * y1_batch + (1 - lam_label) * y2_batch
+
+        if label_refinement:
+            self.eval()
+
+            # Compute weights for samples
+            p1 = torch.sigmoid(self.model(x1_batch))
+            loss_mat1, _, _, pos_idx1, neg_idx1 = self.compute_bce_losses(
+                p1, y1_batch
+            )
+            p_clean_batch1 = self.compute_clean_prob(loss_mat1, pos_idx1, neg_idx1)
+            w1 = self.ambiguous_weights(p_clean_batch1, ambiguous_mask)
+
+            p2 = torch.sigmoid(self.model(x2_batch))
+            loss_mat2, _, _, pos_idx2, neg_idx2 = self.compute_bce_losses(
+                p2, y2_batch
+            )
+            p_clean_batch2 = self.compute_clean_prob(loss_mat2, pos_idx2, neg_idx2)
+            w2 = self.ambiguous_weights(p_clean_batch2, ambiguous_mask)
+
+            weights = lam_label * w1 + (1 - lam_label) * w2
+
+            self.train()
+        
+        return mixed_images, mixed_labels, weights
+
+    def compute_bce_losses(self, probs, labels):
+        """ Returns loss_pos[k], loss_neg[k], and index lists """
+        bce = nn.BCELoss(reduction='none')
+        loss_mat = bce(probs, labels)   # shape [B, K]
+
+        pos_idx = (labels == 1)
+        neg_idx = (labels == 0)
+
+        loss_pos = [loss_mat[pos_idx[:, k], k].detach().cpu().numpy() for k in range(labels.shape[1])]
+        loss_neg = [loss_mat[neg_idx[:, k], k].detach().cpu().numpy() for k in range(labels.shape[1])]
+
+        # print('loss_mat shape:', loss_mat.shape)
+        # print('loss_pos len:', len(loss_pos))
+        # print('loss_neg len:', len(loss_neg))
+
+        return loss_mat, loss_pos, loss_neg, pos_idx, neg_idx
+    
+    def fit_gmm(self, loss_lists):
+        """ Fit Gaussian Mixture Models for each class based on loss lists """
+        gmms = []
+        for losses in loss_lists:     # losses is list of arrays for each class
+            if len(losses) < 2:       # avoid crash
+                gmms.append(None)
+                continue
+            losses = np.array(losses).reshape(-1, 1)
+            gmm = GaussianMixture(n_components=2, max_iter=200, tol=1e-4, random_state=42)
+            gmm.fit(losses)
+            gmms.append(gmm)
+
+        # print(f'{len(gmms)} GMMs fitted.')
+        return gmms
+    
+    def compute_clean_prob(self, loss_mat, pos_idx, neg_idx):
+        """ Return computed p_clean for each sample and each class """
+        B, K = loss_mat.shape
+        p_clean = torch.zeros_like(loss_mat)
+
+        for k in range(K):
+            # positive labels
+            idx = pos_idx[:, k]
+            if self.gmms_pos[k] is not None and idx.any():
+                losses = loss_mat[idx, k].detach().cpu().numpy().reshape(-1, 1)
+                prob = self.gmms_pos[k].predict_proba(losses)
+                small_comp = np.argmin(self.gmms_pos[k].means_)
+                p_clean[idx, k] = torch.tensor(prob[:, small_comp], dtype=torch.float32, device=loss_mat.device)
+
+            # negative labels
+            idx = neg_idx[:, k]
+            if self.gmms_neg[k] is not None and idx.any():
+                losses = loss_mat[idx, k].detach().cpu().numpy().reshape(-1, 1)
+                prob = self.gmms_neg[k].predict_proba(losses)
+                small_comp = np.argmin(self.gmms_neg[k].means_)
+                p_clean[idx, k] = torch.tensor(prob[:, small_comp], dtype=torch.float32, device=loss_mat.device)
+            
+            # Normalize to the same range for all classes
+            # p_clean[:, k] = (p_clean[:, k] - p_clean[:, k].min()) / (p_clean[:, k].max() - p_clean[:, k].min() + 1e-8)
+
+        return p_clean
+    
+    def ambiguous_weights(self, p_clean, ambiguous_mask, scaling_factor=1.0):
+        """ Compute weights for ambiguous samples """
+        w = torch.ones_like(p_clean)
+        w[ambiguous_mask] = p_clean[ambiguous_mask] * scaling_factor
+        return w
+    
+    def rand_aug(self, x):
+        """ RandAug transformation: the parameters are not clear from the paper """
+        to_pil = ToPILImage()
+        transform = transforms.Compose([
+            transforms.RandAugment(num_ops=1, magnitude=2),
+            # transforms.RandomHorizontalFlip(p=0.5),
+            # transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1),
+            transforms.ToTensor()
+        ])
+        pil_img = to_pil(x.cpu())
+        return transform(pil_img).to(x.device)
+    
+    def classify_labels(self, p_clean, thresh=0.5):
+        clean_mask = p_clean > thresh
+        return clean_mask
+
+    def weighted_bce_loss(self, logits, labels, weights=None):
+        """ Weighted BCE Loss supporting three states """
+        if weights is not None:
+            loss = F.binary_cross_entropy_with_logits(logits, labels, weight=weights, reduction='mean')
+        else:
+            loss = F.binary_cross_entropy_with_logits(logits, labels, reduction='mean')
+
+        return loss
 
 
 class HLCTrainer(Trainer):

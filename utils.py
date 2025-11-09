@@ -15,7 +15,25 @@ from urllib.parse import urlparse
 from urllib.request import urlretrieve
 from typing import Dict, Union
 from pprint import pprint
+    
+class WithIndices(Dataset):
+    def __init__(self, dataset, index_key='index'):
+        """
+        Args: 
+            dataset: the original torch Dataset
+            index_key: the key under which the sample index will be stored in the dict
+        """
+        self.dataset = dataset
+        self.index_key = index_key
 
+    def __getitem__(self, idx):
+        item = self.dataset[idx]  # expected to return a dict
+        item_with_idx = dict(item)  # copy to avoid modifying original
+        item_with_idx[self.index_key] = idx
+        return item_with_idx
+
+    def __len__(self):
+        return len(self.dataset)
 
 class Warp(object):
     def __init__(self, size, interpolation=Image.BILINEAR):
