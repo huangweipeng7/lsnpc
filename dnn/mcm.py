@@ -23,7 +23,8 @@ class MCMClassifier(nn.Module):
         # B: confusion matrix for negative class influence
         self.A = nn.Parameter(torch.eye(n_labels), requires_grad=True)
         self.B = nn.Parameter(torch.zeros(n_labels, n_labels), requires_grad=True)
-        
+        # nn.init.xavier_uniform_(self.A)
+        nn.init.xavier_uniform_(self.B)
         # Initialize constraint utilities for maintaining probability constraints
         self.constraint_utils = ConstraintUtils()
 
@@ -32,8 +33,10 @@ class MCMClassifier(nn.Module):
         # Compute the base predictions
         y = self.encoder(x)
         y = self.dp(y) 
-        y = self.cls_layer(y) 
+        y = self.cls_layer(y)  
         clean_probs = self.pred_sigmoid(y)
+
+        assert not torch.any(torch.isnan(clean_probs))
 
         self._validate_probabilities(clean_probs, "Base predictions y")
 
@@ -65,15 +68,21 @@ class MCMClassifier(nn.Module):
         # Transpose clean_probs to (num_classes, batch_size) for matrix multiplication
         clean_probs_t = clean_probs.T  # Shape: (num_classes, batch_size)
         
+        assert not torch.any(torch.isnan(clean_probs_t))
+
         # Compute A * f(x) using matrix multiplication
         # A shape: (num_classes, num_classes), clean_probs_t shape: (num_classes, batch_size)
         # Result shape: (num_classes, batch_size)
         term_A = torch.matmul(self.A, clean_probs_t)
         
+        assert not torch.any(torch.isnan(term_A))
+
         # Compute B * (1 - f(x)) using matrix multiplication
         complement_probs = 1.0 - clean_probs_t  # Shape: (num_classes, batch_size)
         term_B = torch.matmul(self.B, complement_probs)
         
+        assert not torch.any(torch.isnan(term_B))
+ 
         # Combine terms: g = A*f(x) + B*(1-f(x))
         noisy_probs_t = term_A + term_B  # Shape: (num_classes, batch_size)
         
@@ -118,7 +127,9 @@ class MCMClassifier(nn.Module):
             
         Raises:
             ValueError: If probabilities are outside valid range
-        """
+        """ 
+        assert not torch.any(torch.isnan(probs))
+
         if torch.any(probs < 0) or torch.any(probs > 1):
             min_val = probs.min().item()
             max_val = probs.max().item()
@@ -133,30 +144,7 @@ class MCMLoss(nn.Module):
         self.p = p  # Quasi-norm parameter for sparsity
         self.epsilon = 1e-8  # Small constant for numerical stability
         self.sparsity_lambda = sparsity_lambda
-
-    def compute_bce_loss(self, 
-                    predictions: torch.Tensor, 
-                    targets: torch.Tensor) -> torch.Tensor:
-        """
-        Compute Binary Cross-Entropy loss with numerical stability.
-        
-        Args:
-            predictions: Predicted probabilities of shape (batch_size, num_classes)
-            targets: Target labels of shape (batch_size, num_classes)
-            
-        Returns:
-            BCE loss value
-        """
-        # Clamp predictions to avoid log(0) and log(1) issues
-        predictions_clamped = torch.clamp(predictions, self.epsilon, 1.0 - self.epsilon)
-        
-        # Compute BCE loss
-        bce_loss = -torch.mean(
-            targets * torch.log(predictions_clamped) + 
-            (1 - targets) * torch.log(1 - predictions_clamped)
-        )
-        
-        return bce_loss
+        self.bce_loss = nn.BCELoss()
     
     def compute_sparsity_loss(self, clean_probs: torch.Tensor) -> torch.Tensor:
         """
@@ -171,15 +159,12 @@ class MCMLoss(nn.Module):
         Returns:
             Sparsity regularization loss value
         """
-
-        
         # Compute ℓ_p quasi-norm: sum over classes of (|value| + ε)^p
         # Add epsilon for numerical stability and to avoid gradient issues at 0
         sparsity_terms = torch.pow(torch.abs(clean_probs) + self.epsilon, self.p)
         
         # Sum over classes and average over batch
-        sparsity_loss = torch.mean(torch.sum(sparsity_terms, dim=1))
-        
+        sparsity_loss = torch.mean(torch.sum(sparsity_terms, dim=1)) 
         return sparsity_loss
     
     def forward(self, 
@@ -198,8 +183,9 @@ class MCMLoss(nn.Module):
             Tuple of (total_loss, loss_components_dict)
         """
         # Compute BCE loss on noisy predictions
-        bce_loss = self.compute_bce_loss(clean_probs, noisy_targets)
-        
+        # bce_loss = self.compute_bce_loss(clean_probs, noisy_targets)
+        bce_loss = self.bce_loss(clean_probs, noisy_targets)        
+
         # Compute sparsity regularization loss
         sparsity_loss = self.compute_sparsity_loss(clean_probs)
         

@@ -174,7 +174,7 @@ def train_lsnpc():
         pretrained_clf = hlc.get_model(encoder, emb_size, n_labels)
     elif model_args.clf_name == 'hlc':
         pretrained_clf = hlc.get_model(encoder, emb_size, n_labels)
-    elif model_args.clf_name == 'mlmcm':
+    elif model_args.clf_name == 'mcm':
         pretrained_clf = MCMClassifier(encoder, emb_size, n_labels)
     else:
         raise AttributeError('Not recognized classifier')

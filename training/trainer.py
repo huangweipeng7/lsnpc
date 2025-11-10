@@ -174,7 +174,7 @@ class Trainer:
             loss_all += loss.item()
             n_runs += 1
     
-            nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=2)
+            nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=5)
             self.optimizer.step()
             
             pbar.set_description(f'training loss: {loss_all/n_runs:.4f}')

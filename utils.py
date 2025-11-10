@@ -298,8 +298,8 @@ class ConstraintUtils:
         
         # Step 1: Enforce non-negativity constraint
         # All entries must be ≥ 0
-        A_projected = torch.clamp(A, min=0.0)
-        B_projected = torch.clamp(B, min=0.0)
+        A_projected = torch.clamp(A, min=1e-6)
+        B_projected = torch.clamp(B, min=1e-6)
         
         # Step 2: Concatenate matrices horizontally: Z = [A | B]
         Z = torch.cat([A_projected, B_projected], dim=1)  # Shape: (K, 2K)
@@ -325,6 +325,8 @@ class ConstraintUtils:
         # Step 5: Normalize rows to sum to 1
         # Use safe division with epsilon to prevent division by zero
         Z_normalized = Z_modified / (row_sums_modified + epsilon)
+
+        assert not torch.any(torch.isnan(Z_normalized))
         
         # Step 6: Split back into A and B matrices
         A_projected = Z_normalized[:, :K]  # First K columns
@@ -427,8 +429,8 @@ class ConstraintUtils:
         K = A.shape[0]
         
         # Non-negativity violations
-        neg_A = torch.clamp(-A, min=0.0)  # Positive where A < 0
-        neg_B = torch.clamp(-B, min=0.0)  # Positive where B < 0
+        neg_A = torch.clamp(-A, min=1e-6)  # Positive where A < 0
+        neg_B = torch.clamp(-B, min=1e-6)  # Positive where B < 0
         
         non_neg_violation_A = neg_A.max().item()
         non_neg_violation_B = neg_B.max().item()
