@@ -16,67 +16,33 @@ from sklearn.model_selection import train_test_split
 from utils import *
 
 
-def category_to_idx(category):
-    cat2idx = {}
-    for cat in category:
-        cat2idx[cat] = len(cat2idx)
-    return cat2idx
 
-
-class DeepFashion(data.Dataset):
-    """Deepfashion dataset
-        
+class NUSWide(data.Dataset):
+    """NUSWide dataset from https://www.kaggle.com/datasets/twerwweqweq/nuswide
+       Download and unzip the dataset into [root]/nus_wide folder 
+    
     """
     def __init__(self, 
         root,  
         noise_type = 'symmetric', 
         noise_rate=0.0, 
         split_per=0.9, 
-        nb_classes=26, 
+        nb_classes=81, 
         num_workers=4,
         noisy_val=False
     ):
         random_seed = 1 
 
         self.root = root 
-        self.cat2idx = category_to_idx([
-                "floral",
-                "graphic",
-                "striped",
-                "embroidered",
-                "pleated",
-                "solid",
-                "lattice",
-                "long_sleeve",
-                "short_sleeve",
-                "sleeveless",
-                "maxi_length",
-                "mini_length",
-                "no_dress",
-                "crew_neckline",
-                "v_neckline",
-                "square_neckline",
-                "no_neckline",
-                "denim",
-                "chiffon",
-                "cotton",
-                "leather",
-                "faux",
-                "knit",
-                "tight",
-                "loose",
-                "conventional"
-        ])
-        df_dict = self.get_anno()
-        self.num_classes = len(self.cat2idx) 
+        self.num_classes = nb_classes
 
+        df_dict = self.get_anno()
+        
         # --- Setup training set ---
         train_data = df_dict['train']
 
-        assert np.max(train_data['labels']) == 1
-        assert np.min(train_data['labels']) == 0
-
         if noise_rate > 0:
+            print('Creating noisy labels for training set...')
             train_data['labels'] = generate_noisy_labels(
                 train_data['labels'], noise_type, noise_rate, nb_classes, random_seed
             )
@@ -89,7 +55,7 @@ class DeepFashion(data.Dataset):
         ).map(
             lambda batch: {
                 'data': Image.open(
-                    os.path.join(self.root, 'deepfashion', batch['image_path'])
+                    os.path.join(self.root, 'nus_wide', batch['image_path'])
                 ).convert('RGB')
             }, 
             remove_columns=['image_path'],
@@ -110,7 +76,7 @@ class DeepFashion(data.Dataset):
         ).map(
             lambda batch: {
                 'data': Image.open(
-                    os.path.join(self.root, 'deepfashion', batch['image_path'])
+                    os.path.join(self.root, 'nus_wide', batch['image_path'])
                 ).convert('RGB')
             }, 
             remove_columns=['image_path'],
@@ -131,7 +97,7 @@ class DeepFashion(data.Dataset):
         ).map(
             lambda batch: {
                 'data': Image.open(
-                    os.path.join(self.root, 'deepfashion', batch['image_path'])
+                    os.path.join(self.root, 'nus_wide', batch['image_path'])
                 ).convert('RGB')
             }, 
             remove_columns=['image_path'],
@@ -141,14 +107,14 @@ class DeepFashion(data.Dataset):
         # --- Setup test set ---
         test_data = df_dict['test']
         test_data['labels'] = np.array(test_data['labels'])
-        test_data['labels'][test_data['labels'] == -1] = 0
+        # test_data['labels'][test_data['labels'] == -1] = 0
         test_data['labels'] = test_data['labels'].tolist()
         self.test_data = datasets.Dataset.from_dict(
             test_data
         ).map(
             lambda batch: {
                 'data': Image.open(
-                    os.path.join(self.root, 'deepfashion', batch['image_path'])
+                    os.path.join(self.root, 'nus_wide', batch['image_path'])
                 ).convert('RGB') 
             },
             remove_columns=['image_path'],
@@ -156,45 +122,78 @@ class DeepFashion(data.Dataset):
         )
 
 
-    def get_anno(self):  
+    def get_anno(self): 
         """ Return the dictionary of dataframe for train/val/test splits
             Each dataframe contains `image_path` and `labels` (list of multi-labels)
-            - test_attr.txt contains 1/0 26 labebls
-            - test.txt contains image paths starting from 'img/'
         """
+        # print('Preparing NUS-WIDE annotations...')
         anno_path = os.path.join(
-            self.root, 'deepfashion', 'Anno_fine'
+            self.root, 'nus_wide'
         )
 
         df_dict = {}
 
-        for phase in ['train', 'val', 'test']:
-            img_list = []
-            labels = []
-            with open(os.path.join(anno_path, f'{phase}.txt')) as f:
-                lines = f.readlines()
-                for line in lines:
-                    img_list.append(line.strip())
-            with open(os.path.join(anno_path, f'{phase}_attr.txt')) as f:
-                lines = f.readlines()
-                for line in lines:
-                    label = [int(i) for i in line.strip().split()]
-                    labels.append(label)
+        train_df = pd.read_csv(os.path.join(anno_path, 'train.csv'))#.iloc[:10000]
+        test_df = pd.read_csv(os.path.join(anno_path, 'test.csv'))#.iloc[:5000]
 
-            if phase != 'val':
-                df_dict[phase] = {
-                    'image_path': img_list, 'labels': labels
-                }
-            else:
-                val_img_list0, val_img_list1, val_labels0, val_labels1 = train_test_split(
-                    img_list, labels, test_size=0.5, random_state=42)
-                df_dict['val0'] = {
-                    'image_path': val_img_list0, 'labels': val_labels0
-                }
-                df_dict['val1'] = {
-                    'image_path': val_img_list1, 'labels': val_labels1
-                }
+        # print(len(train_df), len(test_df))
 
+        cols = train_df.columns.tolist()
+        for unrelated in ['imageid', 'phase', 'num_label']:
+            cols.remove(unrelated)
+
+        assert len(cols) == self.num_classes
+
+        # ----- Train and val split ----- #
+        train_image_paths = [os.path.join('images', x + '.jpg') for x in train_df['imageid'].tolist()]
+        train_labels = train_df[cols].values
+
+        assert np.max(train_labels) == 1
+        assert np.min(train_labels) == 0
+
+        # stratify_keys = [''.join(map(str, label)) for label in train_labels]
+
+        train_paths, val_paths, train_labs, val_labs = train_test_split(
+            train_image_paths, 
+            train_labels,
+            test_size=0.2,  # 20% for validation
+            # stratify=stratify_keys,
+            random_state=42
+        )
+
+        # Further split validation into val0 and val1
+        # val_stratify_keys = [''.join(map(str, label)) for label in val_labs]
+        val_paths0, val_paths1, val_labs0, val_labs1 = train_test_split(
+            val_paths, 
+            val_labs,
+            test_size=0.5,
+            # stratify=val_stratify_keys,
+            random_state=42
+        )
+
+        # Prepare datasets
+        df_dict['train'] = {
+            'image_path': train_paths,
+            'labels': train_labs
+        }
+        
+        df_dict['val0'] = {
+            'image_path': val_paths0,
+            'labels': val_labs0
+        }
+        
+        df_dict['val1'] = {
+            'image_path': val_paths1,
+            'labels': val_labs1
+        }
+
+
+        # ----- Test set ----- #
+        df_dict['test'] = {
+            'image_path': [os.path.join('images', x + '.jpg') for x in test_df['imageid'].tolist()],
+            'labels': test_df[cols].values
+        }
+        # print(df_dict['test']['image_path'][:5])
 
         return df_dict
 
@@ -320,6 +319,6 @@ def noisify_pairflip(y_train, noise, random_state=None, nb_classes=8):
 
 
 if __name__ == '__main__':
-    deepfashioon = DeepFashion(root='data')
+    nuswide = NUSWide(root='data')
 
 
