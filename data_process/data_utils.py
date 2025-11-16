@@ -12,6 +12,7 @@ from .coco import COCO2014
 from .tomato import Tomato
 from .voc import Voc2007, Voc2012
 from .nuswide import NUSWide
+from .cifar10 import CIFAR10
 from utils import MultiScaleCrop, Warp
 
 
@@ -63,6 +64,8 @@ def load_data(args):
         DataClass = DeepFashion
     elif args.dataset=='nuswide':
         DataClass = NUSWide
+    elif args.dataset=='cifar10':
+        DataClass = CIFAR10
     else:
         raise Exception(f"Dataset not prepared: {args.dataset}")
    
