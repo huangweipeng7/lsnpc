@@ -145,7 +145,11 @@ def train_clf():
         lr_scheduler = None
   
         # Loss for multi-label classification
-        loss_fn = nn.BCEWithLogitsLoss()
+        if model_args.loss_fn == 'asl':
+            from dnn.losses import AsymmetricLoss
+            loss_fn = AsymmetricLoss()
+        else:
+            loss_fn = nn.BCEWithLogitsLoss()
 
         trainer = Trainer(
             model=model,

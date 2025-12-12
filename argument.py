@@ -62,6 +62,10 @@ class ModelArguments:
         default=None, 
         metadata={"help": "Where do you want to store the pretrained models downloaded from s3"}
     )
+    loss_fn: Optional[str] = field(
+        default='bce',
+        metadata={'help': '[bce, asl], loss function for multi-label classification'}
+    )
     
 
 @dataclass
