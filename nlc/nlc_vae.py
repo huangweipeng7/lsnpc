@@ -14,8 +14,8 @@ from dnn.utils import init_weights, TOL
 # tomato: 0.01
 # voc: 0.01
 # coco: 
-MOMENTUM = 0.01
-N_LAYERS = 4
+MOMENTUM = 0.1
+N_LAYERS = 5
 
 
 class MlcEncoderY(nn.Module):
@@ -29,7 +29,8 @@ class MlcEncoderY(nn.Module):
         label_emb_dim: int, 
         nu0: int,  
         n_heads: int = 4,
-        n_layers: int = 4
+        n_layers: int = N_LAYERS,
+        dp: float = 0.1
     ):
         super().__init__()
 
@@ -45,7 +46,7 @@ class MlcEncoderY(nn.Module):
         self.data_encoder = data_encoder 
         self.label_encoder = build_mlp(
             n_layers, n_labels, label_emb_dim, 
-            label_emb_dim, dp=0.1, norm='batchnorm'
+            label_emb_dim, dp=dp, norm='batchnorm'
         )
         self.label_encoder.apply(init_weights)
 
@@ -78,7 +79,8 @@ class MlcEncoderZ(nn.Module):
         in_dim: int, 
         latent_dim: int,
         n_layers_mu: int = N_LAYERS, 
-        n_heads: int = 4
+        n_heads: int = 4, 
+        dp: float = 0.1
     ):
         super().__init__()
 
@@ -91,23 +93,18 @@ class MlcEncoderZ(nn.Module):
         }
   
         self.mu = build_mlp(
-            n_layers_mu, in_dim, in_dim*2, in_dim, dp=0.1, norm='batchnorm'
+            n_layers_mu, in_dim, latent_dim, #$in_dim*2, 
+            in_dim, dp=dp, norm='batchnorm'
         )
-        self.mu.apply(init_weights)
+        # self.mu.apply(init_weights)
         self.gate = nn.Sigmoid()
 
         self.logvar = nn.Linear(in_dim, in_dim) 
   
     def forward(self, z: torch.Tensor) -> Dict[str, torch.Tensor]: 
-        mu = self.mu(z)
-        # out = self.mu(z)
-        # in_gate, dz = out.chunk(2, dim=-1)
-        # g = self.gate(in_gate)
-        # mu = (1 - g) * z + g * dz
-         
-        logvar = torch.clamp(self.logvar(z), max=5.)  
-        enc_doc = {'mu': mu, 'logvar': logvar}
-        return enc_doc
+        mu = self.mu(z)  
+        logvar = torch.clamp(self.logvar(z), max=5)   
+        return {'mu': mu, 'logvar': logvar}
 
         
 class MlcDecoderY(nn.Module):
@@ -119,7 +116,8 @@ class MlcDecoderY(nn.Module):
         n_labels: int, 
         data_emb_dim: int, 
         label_emb_dim: int, 
-        n_heads: int = N_LAYERS
+        n_heads: int = N_LAYERS,
+        dp: float = 0.1
     ):
         super().__init__()
 
@@ -132,8 +130,8 @@ class MlcDecoderY(nn.Module):
 
         self.data_encoder = data_encoder 
   
-        self.trans = nn.Linear(data_emb_dim+latent_dim, n_labels)
- 
+        self.trans = nn.Linear(data_emb_dim+latent_dim, n_labels) 
+
         self.sigmoid = nn.Sigmoid()
         self.norm = nn.BatchNorm1d(data_emb_dim+latent_dim, momentum=MOMENTUM)
  
@@ -154,7 +152,8 @@ class MlcDecoderZ(nn.Module):
         self, 
         in_dim: int, 
         latent_dim: int, 
-        n_layers: int = N_LAYERS
+        n_layers: int = N_LAYERS,
+        dp: float = 0.1
     ):
         super().__init__()
 
@@ -168,7 +167,8 @@ class MlcDecoderZ(nn.Module):
   
         # TEST CASE
         self.shift_mlp = build_mlp(
-            n_layers, in_dim, in_dim*2, in_dim, dp=0.1, norm='batchnorm'
+            n_layers, in_dim, latent_dim, #in_dim*2, 
+            in_dim, dp=dp, norm='batchnorm'
         )
         self.shift_mlp.apply(init_weights)
         self.gate = nn.Sigmoid()
@@ -242,9 +242,14 @@ class NoisyLabelCorrectionVAE(nn.Module):
         mu, std = enc_doc['mu'], torch.exp(enc_doc['logvar']/2) 
         nu = self.nu # enc_doc['nu'] # 
         std = torch.clamp(std, min=1e-4)  
-        T = D.studentT.StudentT(df=nu, loc=mu, scale=std)
+
+        device = mu.device 
+        T = D.studentT.StudentT(
+            df=nu if not isinstance(nu, torch.Tensor) else nu.cpu(), 
+            loc=mu.cpu(), scale=std.cpu()
+        )
         z_hat = T.rsample()
-        return z_hat  
+        return z_hat.to(device)
   
     @torch.no_grad()
     def sample(self, x: torch.Tensor, y_hat: torch.Tensor) -> torch.Tensor:

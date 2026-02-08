@@ -1,43 +1,28 @@
 import json
 import hashlib
 import numpy as np 
-import torch
-import torch.nn as nn
-import tqdm
+import torch 
 from copy import deepcopy
 from dataclasses import dataclass, field
-from datetime import datetime
-from packaging import version
-from pathlib import Path
+from datetime import datetime  
 from pprint import pprint
-from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
-from torchvision.models import resnet50, ResNet50_Weights
-from transformers import (
-    AutoImageProcessor, 
-    HfArgumentParser, 
-    LevitModel,
-    TrainingArguments, 
-    ViTModel
-)
+from torch.utils.data import DataLoader 
+from transformers import HfArgumentParser 
 
-import dnn.hlc as hlc
+from .train_utils import get_encoder, get_pretrained_model 
 from .trainer import VAETrainer
 from argument import (
     CustomTrainingArguments,
     DataTrainingArguments,
     ModelArguments
 )
-from dnn.mlc import MultilabelClassifier, ViTModelWrapper
-from dnn.mcm import MCMClassifier
-from dnn.utils import freeze_param, get_device
-from metrics import test
+from dnn.utils import get_device 
 
 
 @dataclass
 class VAETrainingArguments(CustomTrainingArguments):
     pretrained_clf: str = field(
-        default=None,
+        default='',
         metadata={'help': 'the path to load the pretrained classifier'}
     )
     beta: float = field(
@@ -115,12 +100,11 @@ else:
         NoisyLabelCorrectionVAE
     )
 
-if data_args.dataset.lower() == 'coco':
+if data_args.dataset.lower() in ['nuswide', 'coco']:
     from data_process import data_utils_old as data_utils 
-    print('Importing the old data process for COCO')
+    print('Importing the old data process for COCO/NUSWIDE')
 else:
     from data_process import data_utils 
-
 
 def train_lsnpc():
     if train_args.semi_sup:
@@ -145,45 +129,13 @@ def train_lsnpc():
         print('test_dataset true labels', (test_dataset.true_labels[:10]))
 
         print(test_dataset)
-  
-    # print(f'Training examples: {len(train_dataset.labels)}')
-    # print(f'Val0 examples: {len(val_dataset0.labels)}')
-    # print(f'Val1 examples: {len(val_dataset1.labels)}')
-    # print(f'Test examples: {len(test_dataset.labels)}')
-    # print(f'Number of labels: {n_labels}')
-    if model_args.img_encoder == 'resnet50':
-        # Using 0.1.0
-        # encoder = resnet50(pretrained=True)
-        encoder = resnet50(weights=ResNet50_Weights.DEFAULT)
-        encoder = torch.nn.Sequential(*(list(encoder.children())[:-1]))
-        encoder.fc = nn.Flatten()
-        emb_size = 2048
-    elif model_args.img_encoder == 'levit':
-        encoder = ViTModelWrapper(
-            LevitModel.from_pretrained(
-                'local_models/levit', local_files_only=True
-            )
-        )
-        emb_size = 384
-    else:
-        raise AttributeError('Image feature encoder is not defined...')
-    
-    if model_args.clf_name == 'mlclf': 
-        pretrained_clf = MultilabelClassifier(encoder, emb_size, n_labels)
-    elif model_args.clf_name == 'addgcn':
-        pretrained_clf = hlc.get_model(encoder, emb_size, n_labels)
-    elif model_args.clf_name == 'hlc':
-        pretrained_clf = hlc.get_model(encoder, emb_size, n_labels)
-    elif model_args.clf_name == 'mcm':
-        pretrained_clf = MCMClassifier(encoder, emb_size, n_labels)
-    else:
-        raise AttributeError('Not recognized classifier')
-
-    pretrained_clf.load_state_dict(
-        torch.load(train_args.pretrained_clf, weights_only=True)
+ 
+    encoder, emb_size = get_encoder(model_args.img_encoder)
+ 
+    pretrained_clf = get_pretrained_model(
+        model_args.clf_name, train_args.pretrained_clf, 
+        encoder, emb_size, n_labels
     )
-    for p in pretrained_clf.parameters():
-        p.requires_grad = False
  
     train_loader = DataLoader(
         dataset=train_dataset,
@@ -226,7 +178,8 @@ def train_lsnpc():
     # COCO
     latent_dim = model_args.latent_dim
     label_emb_dim = model_args.label_emb_dim 
-
+    
+    dp = 0.7 
     for run_index in range(train_args.n_repeats):
         arg_dict['run_index'] = run_index   
         
@@ -239,6 +192,7 @@ def train_lsnpc():
      
         data_enc = deepcopy(pretrained_clf.encoder)
         # data_enc = deepcopy(encoder)  
+        # data_enc, emb_size = get_encoder('vit224')
         for p in data_enc.parameters():
             p.requires_grad = True
 
@@ -248,20 +202,22 @@ def train_lsnpc():
             n_labels, 
             emb_size,
             label_emb_dim,
-            model_args.nu0 
+            model_args.nu0,
+            dp=dp
         )
 
-        encoder_z = MlcEncoderZ(latent_dim, latent_dim)
+        encoder_z = MlcEncoderZ(latent_dim, latent_dim, dp=dp)
 
         decoder_y = MlcDecoderY(
             data_enc,  
             latent_dim, 
             n_labels,
             emb_size, 
-            label_emb_dim
+            label_emb_dim,
+            dp=dp
         ) 
 
-        decoder_z = MlcDecoderZ(latent_dim, latent_dim)
+        decoder_z = MlcDecoderZ(latent_dim, latent_dim, dp=dp)
       
         model = NoisyLabelCorrectionVAE(
             encoder_y, 
@@ -270,19 +226,19 @@ def train_lsnpc():
             decoder_z, 
             pretrained_clf,
             nu=model_args.nu,
-            eta=model_args.eta
+            eta=model_args.eta 
         ) 
 
         optimizer = torch.optim.AdamW(
             model.parameters(),
             lr=train_args.lr, 
             weight_decay=train_args.weight_decay
-        )
+        ) 
 
         # Loss for multi-label classification
         loss_fn = CorrectionLoss(beta=train_args.beta)
         lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=10, eta_min=train_args.lr/1000
+            optimizer, T_max=train_args.n_train_epoch, #eta_min=train_args.lr/1000
         )
 
         trainer = VAETrainer(

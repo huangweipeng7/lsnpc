@@ -6,26 +6,20 @@ import torch.nn as nn
 import tqdm
 from copy import deepcopy
 from dataclasses import dataclass, field
-from datetime import datetime
-from packaging import version
+from datetime import datetime 
 from pathlib import Path
 from pprint import pprint
-from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
-from torchvision.models import resnet50, ResNet50_Weights
-from transformers import HfArgumentParser, TrainingArguments
-from transformers import AutoImageProcessor, ViTModel
+from torch.utils.data import DataLoader 
+from transformers import HfArgumentParser 
 
-import dnn.hlc as hlc
 from .trainer import NPCModTrainer
+from .train_utils import get_encoder, get_pretrained_model
 from argument import (
     CustomTrainingArguments,
     DataTrainingArguments,
     ModelArguments
-)
-from dnn.mlc import MultilabelClassifier, ViTModelWrapper
-from dnn.utils import get_device
-from metrics import test
+) 
+from dnn.utils import get_device 
 from nlc.npc_mod import ( 
     CorrectionLoss,
     EncoderCopulasWrapper,
@@ -38,7 +32,7 @@ from nlc.npc_mod import (
 @dataclass
 class VAETrainingArguments(CustomTrainingArguments):
     pretrained_clf: str = field(
-        default=None,
+        default='',
         metadata={'help': 'the path to load the pretrained classifier'}
     )
     beta: float = field(
@@ -54,7 +48,7 @@ class VAETrainingArguments(CustomTrainingArguments):
         metadata ={'help': 'gradient clipping norm'}
     )
     post_model: str = field(
-        default='npc mod',
+        default='npc_mod',
         metadata={'help': 'the post method name'}
     )
     semi_sup: bool = field(
@@ -102,44 +96,13 @@ def train_mlnlc(run_index=0):
 
     print(test_dataset)
   
-    if model_args.img_encoder == 'resnet50':
-        # Using 0.1.0
-        # encoder = resnet50(pretrained=True)
-        encoder = resnet50(weights=ResNet50_Weights.DEFAULT)
-        encoder = torch.nn.Sequential(*(list(encoder.children())[:-1]))
-        encoder.fc = nn.Flatten()
-        emb_size = 2048
-    elif model_args.img_encoder == 'vit224':
-        encoder = ViTModelWrapper(
-            ViTModel.from_pretrained(
-                'local_models/vit224', local_files_only=True
-            )
-        )
-        emb_size = 768
-    elif model_args.img_encoder == 'levit':
-        encoder = ViTModelWrapper(
-            LevitModel.from_pretrained(
-                'local_models/levit', local_files_only=True
-            )
-        )
-        emb_size = 384
-    else:
-        raise AttributeError('Image feature encoder is not defined...')
-    
-    if model_args.clf_name == 'mlclf': 
-        pretrained_clf = MultilabelClassifier(encoder, emb_size, n_labels)
-    elif model_args.clf_name == 'addgcn':
-        pretrained_clf = hlc.get_model(encoder, emb_size, n_labels)
-    elif model_args.clf_name == 'hlc':
-        pretrained_clf = hlc.get_model(encoder, emb_size, n_labels)
-    else:
-        raise AttributeError('Not recognized classifier')
-
-    pretrained_clf.load_state_dict(
-        torch.load(train_args.pretrained_clf, weights_only=True)
-    ) 
-    for p in pretrained_clf.parameters():
-        p.requires_grad = False
+    encoder, emb_size = get_encoder(model_args.img_encoder)
+ 
+    pretrained_clf = get_pretrained_model(
+        model_args.clf_name, train_args.pretrained_clf, 
+        encoder, emb_size, n_labels
+    )
+ 
  
     train_loader = DataLoader(
         dataset=train_dataset,
@@ -247,7 +210,7 @@ def train_mlnlc(run_index=0):
             device=get_device(),  
             train_on_val=train_args.semi_sup,
             eval_test_at_final_loop_only=train_args.eval_test_at_final_loop_only,
-            metric_storing_path=train_args.metric_storing_path
+            metric_storing_path=f"./results/{arg_dict['dataset']}_results.csv"
         )
 
         trainer.train_model(

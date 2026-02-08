@@ -2,25 +2,15 @@ import json
 import hashlib
 import numpy as np
 import torch
-import torch.nn as nn
-import tqdm
-from datetime import datetime
-from pathlib import Path
+import torch.nn as nn 
+from datetime import datetime 
 from pprint import pprint
-from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
-from torchvision.models import resnet50, ResNet50_Weights
-from transformers import (
-    AutoImageProcessor, 
-    HfArgumentParser,
-    LevitModel, 
-    TrainingArguments, 
-    ViTModel
-)
-from torchsummary import summary
+from torch.utils.data import DataLoader  
+from transformers import HfArgumentParser 
+ 
 
-import dnn.hlc as hlc
 from .trainer import Trainer
+from .train_utils import get_encoder 
 from argument import (
     CustomTrainingArguments,
     DataTrainingArguments,
@@ -43,9 +33,9 @@ np.random.seed(train_args.seed)
 torch.manual_seed(train_args.seed)
 torch.cuda.manual_seed(train_args.seed)
 
-if data_args.dataset.lower() == 'coco':
+if data_args.dataset.lower() in ['nuswide', 'coco']:
     from data_process import data_utils_old as data_utils 
-    print('Importing the old data process for COCO')
+    print('Importing the old data process for COCO/NUSWIDE')
 else:
     from data_process import data_utils 
 
@@ -103,29 +93,7 @@ def train_clf():
         # Time added after the uid is created
         arg_dict['time'] = datetime.now().strftime("%Y%m%d_%H_%M_%S")
 
-        if model_args.img_encoder == 'resnet50':
-            # Using 0.1.0
-            #encoder = resnet50(pretrained=True)
-            encoder = resnet50(weights=ResNet50_Weights.DEFAULT)
-            encoder = torch.nn.Sequential(*(list(encoder.children())[:-1]))
-            encoder.fc = nn.Flatten()
-            emb_size = 2048
-        elif model_args.img_encoder == 'vit224':
-            encoder = ViTModelWrapper(
-                ViTModel.from_pretrained(
-                    'local_models/levit', local_files_only=True
-                )
-            )
-            emb_size = 768 
-        elif model_args.img_encoder == 'levit':
-            encoder = ViTModelWrapper(
-                LevitModel.from_pretrained(
-                    'local_models/levit', local_files_only=True
-                )
-            )
-            emb_size = 384
-        else:
-            raise Exception('Image feature encoder is not defined...')
+        encoder, emb_size = get_encoder(model_args.img_encoder)
 
         model = MultilabelClassifier(encoder, emb_size, n_labels)
 
@@ -139,7 +107,11 @@ def train_clf():
         lr_scheduler = None
   
         # Loss for multi-label classification
-        loss_fn = nn.BCEWithLogitsLoss()
+        if model_args.loss_fn == 'asl':
+            from dnn.losses import AsymmetricLoss
+            loss_fn = AsymmetricLoss()
+        else:
+            loss_fn = nn.BCEWithLogitsLoss()
 
         trainer = Trainer(
             model=model,

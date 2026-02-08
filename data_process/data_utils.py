@@ -11,6 +11,7 @@ from .deepfashion import DeepFashion
 from .coco import COCO2014
 from .tomato import Tomato
 from .voc import Voc2007, Voc2012
+from .nuswide import NUSWide
 from utils import MultiScaleCrop, Warp
 
 
@@ -60,6 +61,8 @@ def load_data(args):
         DataClass = Tomato
     elif args.dataset=='deepfashion':
         DataClass = DeepFashion
+    elif args.dataset=='nuswide':
+        DataClass = NUSWide
     else:
         raise Exception(f"Dataset not prepared: {args.dataset}")
    

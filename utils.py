@@ -9,14 +9,33 @@ import torch.nn.functional as F
 import pandas as pd
 
 from PIL import Image
+from torch import Tensor
 from torch.utils.data import Dataset
 from tqdm import tqdm
 from urllib.parse import urlparse
 from urllib.request import urlretrieve
-from typing import Dict, Union
+from typing import Dict, Union, Tuple
 from pprint import pprint
-from torch import Tensor
-from typing import Tuple
+
+
+class WithIndices(Dataset):
+    def __init__(self, dataset, index_key='index'):
+        """
+        Args: 
+            dataset: the original torch Dataset
+            index_key: the key under which the sample index will be stored in the dict
+        """
+        self.dataset = dataset
+        self.index_key = index_key
+
+    def __getitem__(self, idx):
+        item = self.dataset[idx]  # expected to return a dict
+        item_with_idx = dict(item)  # copy to avoid modifying original
+        item_with_idx[self.index_key] = idx
+        return item_with_idx
+
+    def __len__(self):
+        return len(self.dataset)
 
 
 class Warp(object):
@@ -102,6 +121,7 @@ class MultiScaleCrop(object):
 
     def __str__(self):
         return self.__class__.__name__
+
 
 def download_url(url, destination=None, progress_bar=True):
     """Download a URL to a local file.
@@ -257,6 +277,7 @@ def store_results(
     df = pd.DataFrame(filtered_dict, index=[0])
     file_exist= os.path.exists(store_file)
     df.to_csv(store_file, mode='a', index=False, header=(not file_exist))
+
 
 class ConstraintUtils:
     """

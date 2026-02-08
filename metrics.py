@@ -40,10 +40,8 @@ def test(trainer, loader, criterion):
     for batch in tqdm.tqdm(loader, colour='green'):
         # Pass to gpu or cpu
         pred = trainer.predict(batch) 
-        pred = torch.clamp(pred, min=1e-6, max=1.)
         target = batch['labels'].to(device)
 
-        ### Calculate stats
         # print(pred[:3], target[:3])
         # assert (pred >= 0).all() and (pred <= 1).all(), pred.mean()
         # assert (target >= 0).all() and (target <= 1).all()
@@ -69,4 +67,3 @@ def test(trainer, loader, criterion):
     }
      
     return res_doc
-       

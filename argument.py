@@ -1,11 +1,7 @@
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
-from transformers import (
-    HfArgumentParser, 
-    TrainingArguments
-)
+from typing import Optional
 
- 
+
 @dataclass
 class DataTrainingArguments:
     """
@@ -61,6 +57,10 @@ class ModelArguments:
     cache_dir: Optional[str] = field(
         default=None, 
         metadata={"help": "Where do you want to store the pretrained models downloaded from s3"}
+    )
+    loss_fn: Optional[str] = field(
+        default='bce',
+        metadata={'help': '[bce, asl], loss function for multi-label classification'}
     )
     
 

@@ -25,7 +25,8 @@ from argument import (
     ModelArguments
 )
 from data_process import data_utils as data_utils
-from dnn.mlc import MultilabelClassifier, ViTModelWrapper
+from dnn.mlc import MultilabelClassifier, ViTModelWrapper 
+from dnn.mcm import MCMClassifier
 from dnn.utils import freeze_param, get_device
 from metrics import test
 #from nlc.nlc_vae import (
@@ -111,6 +112,8 @@ def train_knn():
         pretrained_clf = MultilabelClassifier(encoder, emb_size, n_labels)
     elif model_args.clf_name in ['addgcn', 'hlc']:
         pretrained_clf = hlc.get_model(encoder, emb_size, n_labels)
+    elif model_args.clf_name == 'mcm':
+        pretrained_clf = MCMClassifier(encoder, emb_size, n_labels)
     else:
         raise AttributeError('Not recognized classifier')
 
