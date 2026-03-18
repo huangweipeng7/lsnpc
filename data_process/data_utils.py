@@ -5,7 +5,6 @@ import sys
 import torch
 import torchvision.transforms as transforms
 from functools import partial
-from PIL import Image
 
 from .deepfashion import DeepFashion
 from .coco import COCO2014
@@ -19,16 +18,46 @@ logger = logging.getLogger(__name__)
 
 
 def batch_transform(batch, transform):
-    batch['data'] = [
-        transform(x) for x in iter(batch['data'])
-    ]
-    batch['labels'] = [
-        torch.tensor(x) for x in iter(batch['labels'])
-    ]
+    """Apply transformation to a batch of images and labels.
+    
+    Args:
+        batch (dict): Dictionary containing 'data' (images) and 'labels'.
+        transform (callable): Transformation pipeline to apply to images.
+        
+    Returns:
+        dict: Transformed batch with images and labels as tensors.
+    """
+    batch['data'] = [transform(x) for x in batch['data']]
+    batch['labels'] = [torch.tensor(x) for x in batch['labels']]
     return batch
 
 
-def load_data(args):    
+def load_data(args):
+    """Load and prepare dataset based on configuration.
+    
+    Args:
+        args (argparse.Namespace): Configuration object with the following attributes:
+            - root (str): Root directory of the dataset
+            - image_size (int): Size to resize images to
+            - split_percentage (float): Proportion of data for training/validation split
+            - noise_type (str): Type of noise to apply ['pairflip', 'symmetric', 'asymmetric']
+            - noise_rate (float): Noise rate (0.0 to 1.0)
+            - dataset (str): Dataset name ['coco', 'voc2007', 'voc2012', 'tomato', 'deepfashion', 'nuswide']
+            - num_workers (int): Number of workers for data loading
+            - noisy_val (bool): Whether to add noise to validation data
+            
+    Returns:
+        dict: Dictionary containing:
+            - 'train_dataset': Training dataset with transforms applied
+            - 'val_dataset0': Validation dataset 0 with validation transforms
+            - 'val_dataset1': Validation dataset 1 with training transforms 
+            - 'test_dataset': Test dataset with validation transforms
+            - 'num_classes': Number of classes in the dataset
+    
+    Raises:
+        ValueError: If an unsupported dataset name is provided
+    """
+    # Define image transformations for training and validation
     train_transform = transforms.Compose([
         MultiScaleCrop(
             args.image_size, 
@@ -39,8 +68,9 @@ def load_data(args):
         transforms.ToTensor(),
         transforms.Normalize(
             mean=[0.485, 0.456, 0.406], 
-            std=[0.229, 0.224, 0.225])]
+            std=[0.229, 0.224, 0.225]
         )
+    ])
     
     val_transform = transforms.Compose([
         Warp(args.image_size),
@@ -51,84 +81,63 @@ def load_data(args):
         )
     ])
     
-    if args.dataset=='coco':
-        DataClass = COCO2014 
-    elif args.dataset=='voc2007':
-        DataClass = Voc2007
-    elif args.dataset=='voc2012':
-        DataClass = Voc2012
-    elif args.dataset=='tomato':
-        DataClass = Tomato
-    elif args.dataset=='deepfashion':
-        DataClass = DeepFashion
-    elif args.dataset=='nuswide':
-        DataClass = NUSWide
-    else:
-        raise Exception(f"Dataset not prepared: {args.dataset}")
-   
-    data_class = DataClass(
-        args.root, 
-        noise_type=args.noise_type, 
-        noise_rate=args.noise_rate,  
-        split_per=args.split_percentage,
-        num_workers=args.num_workers,
-        noisy_val=args.noisy_val
-    )
+    # Map dataset names to their corresponding classes
+    dataset_map = {
+        'coco': COCO2014,
+        'voc2007': Voc2007,
+        'voc2012': Voc2012,
+        'tomato': Tomato,
+        'deepfashion': DeepFashion,
+        'nuswide': NUSWide
+    }
+    
+    # Validate dataset argument
+    if args.dataset not in dataset_map:
+        available_datasets = ', '.join(dataset_map.keys())
+        raise ValueError(f"Unsupported dataset: '{args.dataset}'. "
+                         f"Available datasets: [{available_datasets}]")
+    
+    # Initialize the appropriate dataset class
+    DataClass = dataset_map[args.dataset]
+    
+    try:
+        data_class = DataClass(
+            args.root, 
+            noise_type=args.noise_type, 
+            noise_rate=args.noise_rate,  
+            split_per=args.split_percentage,
+            num_workers=args.num_workers,
+            noisy_val=args.noisy_val
+        )
+    except Exception as e:
+        raise RuntimeError(f"Failed to initialize dataset '{args.dataset}' "
+                           f"with root directory '{args.root}': {str(e)}")
 
+    # Format datasets with proper transforms
     train_dataset = data_class.train_data.with_format(
         'torch', columns=['labels'], output_all_columns=True
     )
-    
     train_dataset.set_transform(
         partial(batch_transform, transform=train_transform)
-    )  
+    )
+    
     val_dataset0 = data_class.val_data0.with_transform(
         partial(batch_transform, transform=val_transform)
-    ) 
+    )
     val_dataset1 = data_class.val_data1.with_transform(
         partial(batch_transform, transform=train_transform)
-    ) 
+    )
     test_dataset = data_class.test_data.with_transform(
         partial(batch_transform, transform=val_transform)
-    ) 
+    )
 
-    print('Done!')
-    n_labels = data_class.get_number_classes()
+    logger.info('Dataset loaded successfully!')
+    num_classes = data_class.get_number_classes()
 
     return {
         'train_dataset': train_dataset, 
         'val_dataset0': val_dataset0,  
         'val_dataset1': val_dataset1, 
         'test_dataset': test_dataset,
-        'n_labels': n_labels
+        'num_classes': num_classes
     }
-
-
-if __name__ == '__main__':
-    logging.basicConfig(
-        #filename='myapp.log', 
-        stream=sys.stdout, 
-        level=logging.INFO
-    )
-
-    parser = argparse.ArgumentParser('Datautils')
-    parser.add_argument('--seed', type=int, default=1)
-    parser.add_argument('--root', type=str, default='data/COCO/')
-    parser.add_argument('--image_size', type=int, help='image size', default=224)
-    parser.add_argument('--split_percentage', type=float, help='train and validation', default=0.9)
-    parser.add_argument('--noise_type', type=str, help='[pairflip, symmetric, asymmetric]', default='symmetric')
-    parser.add_argument('--noise_rate', type=float, help='overall corruption rae, should be less than 1', default=0.4)
-    parser.add_argument('--dataset', type=str, help='voc2007/2012, coco, tomato', default='2007')
-    args = parser.parse_args()
-
-    logger.info('Loading data')
-    train_dataset, val_dataset, test_dataset = load_data(args)
-   
-    print('train image list', train_dataset.images)
-    #print('train cat2idx', train_dataset.cat2idx)
-    print('train labels', train_dataset.labels)
-    print('train true labels', train_dataset.true_labels)
-    print('val true labels', val_dataset.true_labels[0,:])
-    print('test true labels', test_dataset.true_labels[0,:])
-    # for dataset in [train_dataset, val_dataset, test_dataset]:
-    #     print(np.asarray(dataset.labels == dataset.true_labels).sum(), np.asarray(dataset.true_labels).size)

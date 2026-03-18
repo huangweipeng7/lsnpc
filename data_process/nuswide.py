@@ -1,5 +1,6 @@
 import numpy as np
 import os
+import pandas as pd
 from numpy.testing import assert_array_almost_equal
 from PIL import Image
 from sklearn.model_selection import train_test_split
@@ -15,37 +16,25 @@ except ImportError:
     data = None
 
 
-def category_to_idx(categories):
-    """Convert category names to index mapping.
+
+class NUSWide(data.Dataset):
+    """NUS-WIDE dataset for multi-label classification.
     
-    Args:
-        categories: List of category names.
-        
-    Returns:
-        Dictionary mapping category names to indices.
-    """
-    return {cat: idx for idx, cat in enumerate(categories)}
-
-
-class DeepFashion(data.Dataset):
-    """DeepFashion dataset for multi-label classification.
+    Download and prepare the dataset from:
+    https://www.kaggle.com/datasets/twerwweqweq/nuswide
     
     Expected directory structure:
-        [root]/deepfashion/
-            └── Anno_fine/
-                ├── train.txt
-                ├── train_attr.txt
-                ├── val.txt
-                ├── val_attr.txt
-                ├── test.txt
-                └── test_attr.txt
+        [root]/nus_wide/
+            ├── train.csv
+            ├── test.csv
+            └── images/
     
     Args:
-        root: Root directory path containing deepfashion folder.
+        root: Root directory path containing nus_wide folder.
         noise_type: Type of noise ('symmetric' or 'pairflip').
         noise_rate: Noise injection rate (0.0 to 1.0).
         split_per: Train/validation split ratio (unused, kept for compatibility).
-        nb_classes: Number of classes (default: 26).
+        nb_classes: Number of classes (default: 81).
         num_workers: Number of workers for data loading.
         noisy_val: Whether to inject noise into validation set.
     """
@@ -56,25 +45,14 @@ class DeepFashion(data.Dataset):
         noise_type='symmetric', 
         noise_rate=0.0, 
         split_per=0.9, 
-        nb_classes=26, 
+        nb_classes=81, 
         num_workers=4,
         noisy_val=False
     ):
         self.root = root
         self.random_seed = 1
         self.num_workers = num_workers
-        
-        # Define fashion attributes
-        self.attributes = [
-            "floral", "graphic", "striped", "embroidered", "pleated",
-            "solid", "lattice", "long_sleeve", "short_sleeve", "sleeveless",
-            "maxi_length", "mini_length", "no_dress", "crew_neckline",
-            "v_neckline", "square_neckline", "no_neckline", "denim",
-            "chiffon", "cotton", "leather", "faux", "knit", "tight",
-            "loose", "conventional"
-        ]
-        self.cat2idx = category_to_idx(self.attributes)
-        self.num_classes = len(self.cat2idx)
+        self.num_classes = nb_classes
         
         # Load annotations
         df_dict = self._load_annotations()
@@ -82,13 +60,16 @@ class DeepFashion(data.Dataset):
         # Process training data
         train_data = df_dict['train']
         if noise_rate > 0:
+            print('Creating noisy labels for training set...')
             train_data['labels'] = self._generate_noisy_labels(
                 train_data['labels'], noise_type, noise_rate, nb_classes
             )
         else:
             train_data['labels'] = np.array(train_data['labels']).tolist()
         
-        self.train_data = self._create_dataset(train_data, num_workers)
+        self.train_data = self._create_dataset(
+            train_data, num_workers
+        )
         
         # Process validation data
         val_data0 = df_dict['val0']
@@ -111,39 +92,59 @@ class DeepFashion(data.Dataset):
         
         # Process test data
         test_data = df_dict['test']
-        test_data['labels'] = np.array(test_data['labels'])
-        test_data['labels'][test_data['labels'] == -1] = 0
-        test_data['labels'] = test_data['labels'].tolist()
+        test_data['labels'] = np.array(test_data['labels']).tolist()
         self.test_data = self._create_dataset(test_data, num_workers)
     
     def _load_annotations(self):
-        """Load annotations from text files."""
-        anno_path = os.path.join(self.root, 'deepfashion', 'Anno_fine')
-        df_dict = {}
+        """Load and parse train/val/test splits from CSV files."""
+        anno_path = os.path.join(self.root, 'nus_wide')
         
-        for phase in ['train', 'val', 'test']:
-            # Read image paths
-            with open(os.path.join(anno_path, f'{phase}.txt')) as f:
-                img_list = [line.strip() for line in f.readlines()]
-            
-            # Read attributes
-            with open(os.path.join(anno_path, f'{phase}_attr.txt')) as f:
-                labels = [
-                    [int(i) for i in line.strip().split()] 
-                    for line in f.readlines()
-                ]
-            
-            if phase != 'val':
-                df_dict[phase] = {'image_path': img_list, 'labels': labels}
-            else:
-                # Split validation into two halves
-                img0, img1, lab0, lab1 = train_test_split(
-                    img_list, labels, test_size=0.5, random_state=42
-                )
-                df_dict['val0'] = {'image_path': img0, 'labels': lab0}
-                df_dict['val1'] = {'image_path': img1, 'labels': lab1}
+        train_df = pd.read_csv(os.path.join(anno_path, 'train.csv'))
+        test_df = pd.read_csv(os.path.join(anno_path, 'test.csv'))
         
-        return df_dict
+        # Get label columns (exclude metadata columns)
+        cols = train_df.columns.tolist()
+        for col in ['imageid', 'phase', 'num_label']:
+            cols.remove(col)
+        
+        assert len(cols) == self.num_classes
+        
+        # Prepare train/validation split
+        train_paths = [
+            os.path.join('images', x + '.jpg') 
+            for x in train_df['imageid'].tolist()
+        ]
+        train_labels = train_df[cols].values
+        
+        assert train_labels.max() == 1
+        assert train_labels.min() == 0
+        
+        # Split train into train and validation
+        train_paths, val_paths, train_labs, val_labs = train_test_split(
+            train_paths, train_labels,
+            test_size=0.2,
+            random_state=42
+        )
+        
+        # Further split validation into val0 and val1
+        val_paths0, val_paths1, val_labs0, val_labs1 = train_test_split(
+            val_paths, val_labs,
+            test_size=0.5,
+            random_state=42
+        )
+        
+        return {
+            'train': {'image_path': train_paths, 'labels': train_labs},
+            'val0': {'image_path': val_paths0, 'labels': val_labs0},
+            'val1': {'image_path': val_paths1, 'labels': val_labs1},
+            'test': {
+                'image_path': [
+                    os.path.join('images', x + '.jpg') 
+                    for x in test_df['imageid'].tolist()
+                ],
+                'labels': test_df[cols].values
+            }
+        }
     
     def _create_dataset(self, data_dict, num_workers):
         """Create HuggingFace Dataset from dictionary."""
@@ -154,7 +155,7 @@ class DeepFashion(data.Dataset):
             lambda batch: {
                 'data': [
                     Image.open(
-                        os.path.join(self.root, 'deepfashion', img_path)
+                        os.path.join(self.root, 'nus_wide', img_path)
                     ).convert('RGB')
                     for img_path in batch['image_path']
                 ]
@@ -166,17 +167,13 @@ class DeepFashion(data.Dataset):
     
     def _generate_noisy_labels(self, labels, noise_type, noise_rate, nb_classes):
         """Generate noisy labels based on noise type and rate."""
-        labels_copy = labels.copy()
-        labels_copy[labels_copy == 0] = 1
-        labels_copy[labels_copy == -1] = 0
-        
         if noise_type == 'symmetric':
             noisy_labels, _, _ = noisify_multiclass_symmetric(
-                labels_copy, noise_rate, self.random_seed, nb_classes
+                labels, noise_rate, self.random_seed, nb_classes
             )
         else:
             noisy_labels, _, _ = noisify_pairflip(
-                labels_copy, noise_rate, self.random_seed, nb_classes
+                labels, noise_rate, self.random_seed, nb_classes
             )
         
         return noisy_labels
@@ -241,7 +238,7 @@ def multiclass_noisify(y, P, random_state=None):
     return new_y, noise_count, total_label
 
 
-def noisify_multiclass_symmetric(y_train, noise, random_state=None, nb_classes=26):
+def noisify_multiclass_symmetric(y_train, noise, random_state=None, nb_classes=81):
     """Inject symmetric noise by flipping labels uniformly.
     
     Args:
@@ -272,7 +269,7 @@ def noisify_multiclass_symmetric(y_train, noise, random_state=None, nb_classes=2
     return y_train_noisy, actual_noise, P
 
 
-def noisify_pairflip(y_train, noise, random_state=None, nb_classes=26):
+def noisify_pairflip(y_train, noise, random_state=None, nb_classes=81):
     """Inject pairflip noise by flipping to adjacent classes.
     
     Args:
@@ -303,4 +300,8 @@ def noisify_pairflip(y_train, noise, random_state=None, nb_classes=26):
         actual_noise = 0.
     
     return y_train_noisy, actual_noise, P
+
+
+if __name__ == '__main__':
+    nuswide = NUSWide(root='data')
 
