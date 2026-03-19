@@ -132,12 +132,12 @@ def load_data(args):
     )
 
     logger.info('Dataset loaded successfully!')
-    num_classes = data_class.get_number_classes()
+    n_labels = data_class.get_number_classes()
 
     return {
         'train_dataset': train_dataset, 
         'val_dataset0': val_dataset0,  
         'val_dataset1': val_dataset1, 
         'test_dataset': test_dataset,
-        'num_classes': num_classes
+        'n_labels': n_labels
     }
