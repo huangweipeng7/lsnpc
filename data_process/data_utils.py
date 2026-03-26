@@ -24,45 +24,7 @@ from .voc import Voc2007, Voc2012
 from .nuswide import NUSWide
 from utils import MultiScaleCrop, Warp
 
-try:
-    from PIL import Image
-    Image.MAX_IMAGE_PIXELS = None  # Disable decompression bomb check
-    PIL_AVAILABLE = True
-except ImportError:
-    PIL_AVAILABLE = False
-
 logger = logging.getLogger(__name__)
-
-
-def get_image(path: str) -> 'Image.Image':
-    """Load image with optimized decoding.
-    
-    Attempts to use pillow-simd for faster decoding if available,
-    falls back to regular PIL otherwise.
-    
-    Args:
-        path: Path to image file
-        
-    Returns:
-        PIL Image in RGB format
-    """
-    if not PIL_AVAILABLE:
-        raise ImportError("PIL is required for image loading")
-    
-    try:
-        # Use pillow-simd optimized decoding if available
-        img = Image.open(path)
-        
-        # Convert to RGB immediately to ensure consistent format
-        if img.mode != 'RGB':
-            img = img.convert('RGB')
-            
-        return img
-        
-    except Exception as e:
-        logger.warning(f"Failed to load image {path}: {e}")
-        # Return a blank image as fallback
-        e.print_exc()
 
 
 def batch_transform(batch, transform):

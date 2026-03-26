@@ -40,16 +40,15 @@ def load_image(
         PIL Image in RGB format (or fallback)
     """
     try:
-        img = Image.open(path)
-
+        img = Image.open(path) 
         if convert_rgb and img.mode != 'RGB':
-            img = img.convert('RGB')
-
-        return img
+            img = img.convert('RGB') 
 
     except Exception as e:
         logger.warning(f"Failed to load image {path}: {e}")
         return Image.new('RGB', fallback_size, color=(128, 128, 128))
+
+    return img
 
 
 def load_image_from_parts(
@@ -192,8 +191,7 @@ def dataset_split(
     train_labels,
     true_labels,
     split_per: float = 0.9,
-    random_seed: int = 1,
-    num_classes: int = 10
+    random_seed: int = 256
 ) -> Tuple:
     """Split dataset into training and validation sets.
 
@@ -232,7 +230,7 @@ def generate_noisy_labels(
     noise_type: str,
     noise_rate: float,
     nb_classes: int,
-    random_seed: int = 1
+    random_seed: int = 256
 ) -> np.ndarray:
     """Generate noisy labels based on specified noise type.
 
@@ -264,7 +262,7 @@ def generate_noisy_labels(
 def multiclass_noisify(
     y: np.ndarray,
     P: np.ndarray,
-    random_state: Optional[int] = 111
+    random_state: Optional[int] = 256
 ) -> Tuple[np.ndarray, int, int]:
     """Flip classes according to transition probability matrix P.
 
@@ -325,7 +323,7 @@ def multiclass_noisify(
 def noisify_symmetric(
     y_train: np.ndarray,
     noise: float,
-    random_state: Optional[int] = None,
+    random_state: Optional[int] = 256,
     nb_classes: int = 20
 ) -> Tuple[np.ndarray, float, np.ndarray]:
     """Apply symmetric noise to labels.
@@ -361,7 +359,7 @@ def noisify_symmetric(
 def noisify_pairflip(
     y_train: np.ndarray,
     noise: float,
-    random_state: Optional[int] = None,
+    random_state: Optional[int] = 256,
     nb_classes: int = 20
 ) -> Tuple[np.ndarray, float, np.ndarray]:
     """Apply pairflip noise to labels (adjacent class flipping).
