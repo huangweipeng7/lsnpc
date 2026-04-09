@@ -1,36 +1,42 @@
 import csv
-import math
+import logging 
+import random 
+from dataclasses import dataclass, fields, asdict
+from pathlib import Path
+from pprint import pprint
+from typing import Dict, List, Tuple, Union, Optional
+from urllib.parse import urlparse
+from urllib.request import urlretrieve
+
 import numpy as np
-import os
-import random
-import tarfile
+import pandas as pd
 import torch
 import torch.nn.functional as F
-import pandas as pd
-
 from PIL import Image
 from torch import Tensor
 from torch.utils.data import Dataset
 from tqdm import tqdm
-from urllib.parse import urlparse
-from urllib.request import urlretrieve
-from typing import Dict, Union, Tuple
-from pprint import pprint
+
+logger = logging.getLogger(__name__)
 
 
 class WithIndices(Dataset):
+    """Dataset wrapper that adds sample indices to each item.
+    
+    Useful for tracking which samples are being processed during training.
+    
+    Args:
+        dataset: The original PyTorch Dataset.
+        index_key: Key under which the sample index will be stored in the dict.
+    """
+    
     def __init__(self, dataset, index_key='index'):
-        """
-        Args: 
-            dataset: the original torch Dataset
-            index_key: the key under which the sample index will be stored in the dict
-        """
         self.dataset = dataset
         self.index_key = index_key
 
     def __getitem__(self, idx):
-        item = self.dataset[idx]  # expected to return a dict
-        item_with_idx = dict(item)  # copy to avoid modifying original
+        item = self.dataset[idx]
+        item_with_idx = dict(item)
         item_with_idx[self.index_key] = idx
         return item_with_idx
 
@@ -38,7 +44,14 @@ class WithIndices(Dataset):
         return len(self.dataset)
 
 
-class Warp(object):
+class Warp:
+    """Resize images to a fixed size.
+    
+    Args:
+        size: Target size (integer).
+        interpolation: PIL interpolation method (default: BILINEAR).
+    """
+    
     def __init__(self, size, interpolation=Image.BILINEAR):
         self.size = int(size)
         self.interpolation = interpolation
@@ -47,34 +60,66 @@ class Warp(object):
         return img.resize((self.size, self.size), self.interpolation)
 
     def __str__(self):
-        return self.__class__.__name__ + ' (size={size}, interpolation={interpolation})'.format(size=self.size,
-                          
-                                                                                                interpolation=self.interpolation)
-class MultiScaleCrop(object):
+        return (f'{self.__class__.__name__}(size={self.size}, '
+                f'interpolation={self.interpolation})')
 
-    def __init__(self, input_size, scales=None, max_distort=1, fix_crop=True, more_fix_crop=True):
-        self.scales = scales if scales is not None else [1, 875, .75, .66]
+
+class MultiScaleCrop:
+    """Multi-scale crop augmentation for images.
+    
+    Performs random cropping at multiple scales with optional fixed crop positions.
+    
+    Args:
+        input_size: Target output size (int or tuple).
+        scales: List of scale factors (default: [1, 0.875, 0.75, 0.66]).
+        max_distort: Maximum distortion between width and height scales.
+        fix_crop: Whether to use fixed crop positions.
+        more_fix_crop: Whether to use additional fixed crop positions.
+    """
+    
+    def __init__(
+        self, 
+        input_size, 
+        scales=None, 
+        max_distort=1, 
+        fix_crop=True, 
+        more_fix_crop=True
+    ):
+        self.scales = scales if scales is not None else [1, 0.875, 0.75, 0.66]
         self.max_distort = max_distort
         self.fix_crop = fix_crop
         self.more_fix_crop = more_fix_crop
-        self.input_size = input_size if not isinstance(input_size, int) else [input_size, input_size]
+        self.input_size = (
+            input_size if not isinstance(input_size, int) 
+            else [input_size, input_size]
+        )
         self.interpolation = Image.BILINEAR
 
     def __call__(self, img):
         im_size = img.size
         crop_w, crop_h, offset_w, offset_h = self._sample_crop_size(im_size)
-        crop_img_group = img.crop((offset_w, offset_h, offset_w + crop_w, offset_h + crop_h))
-        ret_img_group = crop_img_group.resize((self.input_size[0], self.input_size[1]), self.interpolation)
+        crop_img_group = img.crop(
+            (offset_w, offset_h, offset_w + crop_w, offset_h + crop_h)
+        )
+        ret_img_group = crop_img_group.resize(
+            (self.input_size[0], self.input_size[1]), 
+            self.interpolation
+        )
         return ret_img_group
 
     def _sample_crop_size(self, im_size):
         image_w, image_h = im_size[0], im_size[1]
-
-        # find a crop size
+        
         base_size = min(image_w, image_h)
         crop_sizes = [int(base_size * x) for x in self.scales]
-        crop_h = [self.input_size[1] if abs(x - self.input_size[1]) < 3 else x for x in crop_sizes]
-        crop_w = [self.input_size[0] if abs(x - self.input_size[0]) < 3 else x for x in crop_sizes]
+        crop_h = [
+            self.input_size[1] if abs(x - self.input_size[1]) < 3 else x 
+            for x in crop_sizes
+        ]
+        crop_w = [
+            self.input_size[0] if abs(x - self.input_size[0]) < 3 else x 
+            for x in crop_sizes
+        ]
 
         pairs = []
         for i, h in enumerate(crop_h):
@@ -83,16 +128,21 @@ class MultiScaleCrop(object):
                     pairs.append((w, h))
 
         crop_pair = random.choice(pairs)
-        if not self.fix_crop:
+        
+        if self.fix_crop:
+            w_offset, h_offset = self._sample_fix_offset(
+                image_w, image_h, crop_pair[0], crop_pair[1]
+            )
+        else:
             w_offset = random.randint(0, image_w - crop_pair[0])
             h_offset = random.randint(0, image_h - crop_pair[1])
-        else:
-            w_offset, h_offset = self._sample_fix_offset(image_w, image_h, crop_pair[0], crop_pair[1])
 
         return crop_pair[0], crop_pair[1], w_offset, h_offset
 
     def _sample_fix_offset(self, image_w, image_h, crop_w, crop_h):
-        offsets = self.fill_fix_offset(self.more_fix_crop, image_w, image_h, crop_w, crop_h)
+        offsets = self.fill_fix_offset(
+            self.more_fix_crop, image_w, image_h, crop_w, crop_h
+        )
         return random.choice(offsets)
 
     @staticmethod
@@ -100,48 +150,46 @@ class MultiScaleCrop(object):
         w_step = (image_w - crop_w) // 4
         h_step = (image_h - crop_h) // 4
 
-        ret = list()
-        ret.append((0, 0))  # upper left
-        ret.append((4 * w_step, 0))  # upper right
-        ret.append((0, 4 * h_step))  # lower left
-        ret.append((4 * w_step, 4 * h_step))  # lower right
-        ret.append((2 * w_step, 2 * h_step))  # center
+        ret = [
+            (0, 0),                          # upper left
+            (4 * w_step, 0),                 # upper right
+            (0, 4 * h_step),                 # lower left
+            (4 * w_step, 4 * h_step),        # lower right
+            (2 * w_step, 2 * h_step),        # center
+        ]
 
         if more_fix_crop:
-            ret.append((0, 2 * h_step))  # center left
-            ret.append((4 * w_step, 2 * h_step))  # center right
-            ret.append((2 * w_step, 4 * h_step))  # lower center
-            ret.append((2 * w_step, 0 * h_step))  # upper center
-
-            ret.append((1 * w_step, 1 * h_step))  # upper left quarter
-            ret.append((3 * w_step, 1 * h_step))  # upper right quarter
-            ret.append((1 * w_step, 3 * h_step))  # lower left quarter
-            ret.append((3 * w_step, 3 * h_step))  # lower righ quarter
+            ret.extend([
+                (0, 2 * h_step),             # center left
+                (4 * w_step, 2 * h_step),    # center right
+                (2 * w_step, 4 * h_step),    # lower center
+                (2 * w_step, 0 * h_step),    # upper center
+                (1 * w_step, 1 * h_step),    # upper left quarter
+                (3 * w_step, 1 * h_step),    # upper right quarter
+                (1 * w_step, 3 * h_step),    # lower left quarter
+                (3 * w_step, 3 * h_step),    # lower right quarter
+            ])
         return ret
 
     def __str__(self):
         return self.__class__.__name__
 
 
-def download_url(url, destination=None, progress_bar=True):
+def download_url(
+    url: str, 
+    destination: str = None, 
+    progress_bar: bool = True
+) -> str:
     """Download a URL to a local file.
-    Parameters
-    ----------
-    url : str
-        The URL to download.
-    destination : str, None
-        The destination of the file. If None is given the file is saved to a temporary directory.
-    progress_bar : bool
-        Whether to show a command-line progress bar while downloading.
-    Returns
-    -------
-    filename : str
-        The location of the downloaded file.
-    Notes
-    -----
-    Progress bar use/example adapted from tqdm documentation: https://github.com/tqdm/tqdm
+    
+    Args:
+        url: The URL to download.
+        destination: Local file path. If None, saves to temporary directory.
+        progress_bar: Whether to show download progress bar.
+        
+    Returns:
+        Path to the downloaded file.
     """
-
     def my_hook(t):
         last_b = [0]
 
@@ -155,358 +203,430 @@ def download_url(url, destination=None, progress_bar=True):
         return inner
 
     if progress_bar:
-        with tqdm(unit='B', unit_scale=True, miniters=1, desc=url.split('/')[-1]) as t:
-            filename, _ = urlretrieve(url, filename=destination, reporthook=my_hook(t))
+        with tqdm(
+            unit='B', 
+            unit_scale=True, 
+            miniters=1, 
+            desc=url.split('/')[-1]
+        ) as t:
+            filename, _ = urlretrieve(
+                url, 
+                filename=destination, 
+                reporthook=my_hook(t)
+            )
     else:
         filename, _ = urlretrieve(url, filename=destination)
+    
+    return filename
 
 
-def read_image_label(file):
-    print('[dataset] read ' + file)
-    data = dict()
+def read_image_label(file: str) -> Dict[str, int]:
+    """Read image-label pairs from a text file.
+    
+    Expected format: "image_name label" per line.
+    
+    Args:
+        file: Path to the label file.
+        
+    Returns:
+        Dictionary mapping image names to labels.
+    """
+    print(f'[dataset] read {file}')
+    data = {}
     with open(file, 'r') as f:
         for line in f:
-            tmp = line.split(' ')
-            name = tmp[0]
-            label = int(tmp[-1])
-            data[name] = label
+            parts = line.strip().split()
+            if len(parts) >= 2:
+                name = parts[0]
+                label = int(parts[-1])
+                data[name] = label
     return data
 
 
-def read_object_labels(root, dataset, phase):
-    path_labels = os.path.join(root, 'VOCdevkit', dataset, 'ImageSets', 'Main')
-    labeled_data = dict()
+def read_object_labels(root: str, dataset: str, phase: str) -> Dict[str, np.ndarray]:
+    """Read object labels from VOC-format label files.
+
+    Args:
+        root: Root directory of the dataset.
+        dataset: Dataset name (e.g., 'VOC2007').
+        phase: Data split ('train', 'val', etc.).
+
+    Returns:
+        Dictionary mapping image names to label arrays.
+    """
+    root = Path(root)
+    path_labels = root / 'VOCdevkit' / dataset / 'ImageSets' / 'Main'
+    labeled_data = {}
     num_classes = len(object_categories)
 
     for i in range(num_classes):
-        file = os.path.join(path_labels, object_categories[i] + '_' + phase + '.txt')
-        data = read_image_label(file)
+        file = path_labels / f'{object_categories[i]}_{phase}.txt'
+        data = read_image_label(str(file))
 
         if i == 0:
-            for (name, label) in data.items():
+            for name, label in data.items():
                 labels = np.zeros(num_classes)
                 labels[i] = label
                 labeled_data[name] = labels
         else:
-            for (name, label) in data.items():
+            for name, label in data.items():
                 labeled_data[name][i] = label
 
     return labeled_data
 
 
-def write_object_labels_csv(file, labeled_data):
-    # write a csv file
-    print('[dataset] write file %s' % file)
-    with open(file, 'w') as csvfile:
-        fieldnames = ['name']
-        fieldnames.extend(object_categories)
+def write_object_labels_csv(filepath: str, labeled_data: Dict[str, np.ndarray]) -> None:
+    """Write object labels to a CSV file.
+    
+    Args:
+        filepath: Output CSV file path.
+        labeled_data: Dictionary mapping image names to label arrays.
+    """
+    print(f'[dataset] Writing labels to {filepath}')
+    with open(filepath, 'w', newline='') as csvfile:
+        fieldnames = ['name'] + list(object_categories)
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
 
         writer.writeheader()
-        for (name, labels) in labeled_data.items():
-            example = {'name': name}
-            for i in range(20):
-                example[fieldnames[i + 1]] = int(labels[i])
-            writer.writerow(example)
+        for name, labels in labeled_data.items():
+            row = {'name': name}
+            for i, category in enumerate(object_categories):
+                row[category] = int(labels[i])
+            writer.writerow(row)
 
 
-def read_object_labels_csv(file, header=True):
+def read_object_labels_csv(filepath: str, header: bool = True) -> List[Tuple[str, Tensor]]:
+    """Read object labels from a CSV file.
+    
+    Args:
+        filepath: Path to the CSV file.
+        header: Whether the CSV has a header row.
+        
+    Returns:
+        List of (image_name, label_tensor) tuples.
+    """
     images = []
     num_categories = 0
-    print('[dataset] read', file)
-    with open(file, 'r') as f:
+    
+    print(f'[dataset] Reading labels from {filepath}')
+    with open(filepath, 'r') as f:
         reader = csv.reader(f)
         rownum = 0
+        
         for row in reader:
             if header and rownum == 0:
-                header = row
-            else:
-                if num_categories == 0:
-                    num_categories = len(row) - 1
-                name = row[0]
-                labels = torch.from_numpy((np.asarray(row[1:num_categories + 1])).astype(np.float32))
-                item = (name, labels)
-                images.append(item)
+                rownum += 1
+                continue
+            
+            if num_categories == 0:
+                num_categories = len(row) - 1
+            
+            name = row[0]
+            labels = torch.from_numpy(
+                np.asarray(row[1:num_categories + 1]).astype(np.float32)
+            )
+            images.append((name, labels))
             rownum += 1
+    
     return images
 
 
-def label_dependency_capture(label_dependency, labels):
-    posterior_pro_y_y = 0.
-    for j in range(labels.size(0)):
-        for k in range(labels.size(0)):
-            if int(labels[k]) != int(labels[j]):
-                t = label_dependency[int(labels[j]), int(labels[k])]
-                posterior_pro_y_y += t
-    return posterior_pro_y_y
+def label_dependency_capture(label_dependency: Tensor, labels: Tensor) -> float:
+    """Calculate label dependency score.
+    
+    Computes the sum of dependency scores between different active labels.
+    
+    Args:
+        label_dependency: Label dependency matrix.
+        labels: Binary label vector.
+        
+    Returns:
+        Dependency score.
+    """
+    posterior_prob = 0.0
+    n_labels = labels.size(0)
+    
+    for j in range(n_labels):
+        for k in range(n_labels):
+            if labels[k] != labels[j]:
+                idx_j = int(labels[j])
+                idx_k = int(labels[k])
+                posterior_prob += label_dependency[idx_j, idx_k]
+    
+    return posterior_prob
+
+
+@dataclass
+class TrainingResult:
+    """Dataclass for training results."""
+    dataset: str = ''
+    noise_type: str = ''
+    noise_rate: float = 0.0
+    run_index: int = 0
+    img_encoder: str = ''
+    data_split: str = ''
+    epoch: int = 0
+    pre_model: str = ''
+    pre_uid: str = ''
+    post_model: str = ''
+    post_uid: str = ''
+    macro_f1: float = 0.0
+    micro_f1: float = 0.0
+    mAP: float = 0.0
+    micro_mAP: float = 0.0
+    lr: float = 0.0
+    batch_size: int = 0
 
 
 def store_results(
-    result_dict: Dict[str, Union[int, float]],
+    result: Union[TrainingResult, Dict[str, Union[int, float, str]]],
     store_file: str = './runs/results.csv'
-):
-    """ 
-    Store results into the root of result folder.
-    Append them if the file is already there.
-
+) -> None:
+    """Store evaluation results to a CSV file.
+    
+    Appends results to existing file or creates new one.
+    
     Args:
-        result_dict: dict containing evaluation metrics and results
-        store_file: file to store the results
+        result: TrainingResult instance or dictionary containing evaluation metrics.
+        store_file: Path to the results CSV file.
     """
-
-    if 'pretrained_clf' in result_dict:
-        # Update post-name, pre-name, post-uid, pre-uid
-        result_dict['post_uid'] = result_dict.pop('uid')
-        result_dict['pre_uid'] = result_dict.pop('pretrained_clf').split('/')[-1].replace('.pth','')
-    else:
-        # Update pre-name, pre-uid
-        result_dict['post_model'] = ''
-        result_dict['post_uid'] = ''
-        result_dict['pre_uid'] = result_dict.pop('uid')
-    result_dict['pre_model'] = result_dict.pop('clf_name')
-    result_dict['img_encoder'] = result_dict.pop('img_encoder')
-
-    cols = [
-        'dataset', 'noise_type', 'noise_rate', 'run_index', 'img_encoder',
-        'data_split', 'epoch', 'pre_model', 'pre_uid', 'post_model', 'post_uid', 
-        'macro_f1', 'micro_f1', 'macro_mAP', 'micro_mAP',
-        'lr', 'batch_size', # For hyper param tuning
-    ]
-    filtered_dict = {k: result_dict[k] for k in cols if k in result_dict}
-
-    df = pd.DataFrame(filtered_dict, index=[0])
-    file_exist= os.path.exists(store_file)
-    df.to_csv(store_file, mode='a', index=False, header=(not file_exist))
+    # Convert dict to TrainingResult if needed
+    if isinstance(result, dict):
+        result = TrainingResult(**{k: v for k, v in result.items() if k in [f.name for f in fields(TrainingResult)]})
+    
+    # Get field names for header
+    cols = [f.name for f in fields(result)]
+    
+    # Write directly to file without pandas overhead
+    store_file = Path(store_file)
+    store_file.parent.mkdir(parents=True, exist_ok=True)
+    file_exist = store_file.exists()
+    
+    with open(store_file, 'a') as f:
+        if not file_exist:
+            f.write(','.join(cols) + '\n')
+        f.write(','.join(str(getattr(result, col, '')) for col in cols) + '\n')
 
 
 class ConstraintUtils:
-    """
-    Utility class for enforcing probability constraints on confusion matrices.
+    """Utility class for enforcing probability constraints on confusion matrices.
     
-    Implements the constraint set Z = {Z ∈ R^(K×2K) | Z * 1_(2K) = 1_K, Z ≥ 0}
+    Implements the constraint set:
+        Z = {Z ∈ R^(K×2K) | Z * 1_(2K) = 1_K, Z ≥ 0}
+    
     where Z = [A | B] is the horizontal concatenation of confusion matrices A and B.
-    
-    This ensures that the MCM model maintains valid probabilistic interpretations
-    throughout training by projecting confusion matrices onto the constraint set.
+    This ensures valid probabilistic interpretations throughout training.
     """
     
     @staticmethod
-    def project_confusion_matrices(A: Tensor, B: Tensor, epsilon: float = 1e-8) -> Tuple[Tensor, Tensor]:
-        """
-        Project confusion matrices A and B onto the probability constraint set.
+    def project_confusion_matrices(
+        A: Tensor, 
+        B: Tensor, 
+        epsilon: float = 1e-8
+    ) -> Tuple[Tensor, Tensor]:
+        """Project confusion matrices onto the probability constraint set.
         
-        The constraint set requires:
-        1. All entries of A and B are non-negative (A ≥ 0, B ≥ 0)
-        2. Each row of the concatenated matrix [A | B] sums to 1
-        
+        Constraints:
+            1. All entries non-negative: A ≥ 0, B ≥ 0
+            2. Row sums equal 1: [A|B] * 1 = 1
+            
         Args:
-            A: Confusion matrix A of shape (K, K) representing positive class influence
-            B: Confusion matrix B of shape (K, K) representing negative class influence  
-            epsilon: Small constant for numerical stability (default: 1e-8)
+            A: Confusion matrix A of shape (K, K) for positive class influence.
+            B: Confusion matrix B of shape (K, K) for negative class influence.
+            epsilon: Small constant for numerical stability.
             
         Returns:
-            Tuple containing:
-            - A_projected: Projected confusion matrix A satisfying constraints
-            - B_projected: Projected confusion matrix B satisfying constraints
+            Tuple of (A_projected, B_projected) satisfying constraints.
             
         Raises:
-            ValueError: If input tensors have incorrect shapes or types
+            ValueError: If input tensors have incorrect shapes or types.
         """
-        # Validate input tensors
         ConstraintUtils._validate_input_matrices(A, B)
         
         K = A.shape[0]
         
-        # Step 1: Enforce non-negativity constraint
-        # All entries must be ≥ 0
-        A_projected = torch.clamp(A, min=1e-6)
-        B_projected = torch.clamp(B, min=1e-6)
+        # Enforce non-negativity
+        A_proj = torch.clamp(A, min=1e-6)
+        B_proj = torch.clamp(B, min=1e-6)
         
-        # Step 2: Concatenate matrices horizontally: Z = [A | B]
-        Z = torch.cat([A_projected, B_projected], dim=1)  # Shape: (K, 2K)
+        # Concatenate horizontally
+        Z = torch.cat([A_proj, B_proj], dim=1)
         
-        # Step 3: Compute row sums
-        row_sums = Z.sum(dim=1, keepdim=True)  # Shape: (K, 1)
-        
-        # Step 4: Handle zero rows (rows that sum to zero after non-negativity)
-        # If a row sums to zero, distribute probability uniformly
+        # Handle zero rows
+        row_sums = Z.sum(dim=1, keepdim=True)
         zero_mask = row_sums < epsilon
-        uniform_value = 1.0 / (2 * K)  # Uniform distribution over 2K entries
         
-        # Replace zero rows with uniform distribution
         if torch.any(zero_mask):
-            logger.debug(f"Found {zero_mask.sum().item()} zero rows, applying uniform distribution")
-            Z_modified = Z.clone()
-            Z_modified[zero_mask.squeeze()] = uniform_value
-            row_sums_modified = Z_modified.sum(dim=1, keepdim=True)
-        else:
-            Z_modified = Z
-            row_sums_modified = row_sums
+            logger.debug(
+                f"Found {zero_mask.sum().item()} zero rows, applying uniform distribution"
+            )
+            uniform_value = 1.0 / (2 * K)
+            Z[zero_mask.squeeze()] = uniform_value
+            row_sums = Z.sum(dim=1, keepdim=True)
         
-        # Step 5: Normalize rows to sum to 1
-        # Use safe division with epsilon to prevent division by zero
-        Z_normalized = Z_modified / (row_sums_modified + epsilon)
-
-        assert not torch.any(torch.isnan(Z_normalized))
+        # Normalize rows
+        Z_normalized = Z / (row_sums + epsilon)
         
-        # Step 6: Split back into A and B matrices
-        A_projected = Z_normalized[:, :K]  # First K columns
-        B_projected = Z_normalized[:, K:]  # Last K columns
+        assert not torch.any(torch.isnan(Z_normalized)), "NaN detected in normalized matrix"
         
-        # Validate output satisfies constraints
+        # Split back
+        A_projected = Z_normalized[:, :K]
+        B_projected = Z_normalized[:, K:]
+        
+        # Validate constraints
         ConstraintUtils._validate_constraints(A_projected, B_projected, epsilon)
         
-        logger.debug(f"Projected confusion matrices: "
-                    f"A_range=[{A_projected.min().item():.3f}, {A_projected.max().item():.3f}], "
-                    f"B_range=[{B_projected.min().item():.3f}, {B_projected.max().item():.3f}]")
+        logger.debug(
+            f"Projected matrices: "
+            f"A=[{A_projected.min().item():.3f}, {A_projected.max().item():.3f}], "
+            f"B=[{B_projected.min().item():.3f}, {B_projected.max().item():.3f}]"
+        )
         
         return A_projected, B_projected
     
     @staticmethod
     def _validate_input_matrices(A: Tensor, B: Tensor) -> None:
-        """
-        Validate input confusion matrices for correct shape and type.
+        """Validate input confusion matrices.
         
         Args:
-            A: Confusion matrix A
-            B: Confusion matrix B
+            A: Confusion matrix A.
+            B: Confusion matrix B.
             
         Raises:
-            ValueError: If matrices have incorrect shapes, types, or device mismatch
+            ValueError: If matrices have incorrect shapes, types, or device mismatch.
         """
         if not isinstance(A, Tensor):
-            raise ValueError(f"A must be a torch.Tensor, got {type(A)}")
+            raise ValueError(f"A must be torch.Tensor, got {type(A)}")
         if not isinstance(B, Tensor):
-            raise ValueError(f"B must be a torch.Tensor, got {type(B)}")
+            raise ValueError(f"B must be torch.Tensor, got {type(B)}")
         
         if A.dim() != 2:
-            raise ValueError(f"A must be 2-dimensional, got shape {A.shape}")
+            raise ValueError(f"A must be 2D, got shape {A.shape}")
         if B.dim() != 2:
-            raise ValueError(f"B must be 2-dimensional, got shape {B.shape}")
+            raise ValueError(f"B must be 2D, got shape {B.shape}")
         
         if A.shape != B.shape:
-            raise ValueError(f"A and B must have same shape, got A{A.shape} vs B{B.shape}")
+            raise ValueError(
+                f"A and B must have same shape, got A{A.shape} vs B{B.shape}"
+            )
         
         K = A.shape[0]
         if A.shape[1] != K:
-            raise ValueError(f"A must be square matrix (K, K), got shape {A.shape}")
+            raise ValueError(f"A must be square (K, K), got {A.shape}")
         
-        # Check device compatibility
         if A.device != B.device:
-            raise ValueError(f"A and B must be on same device, got A{A.device} vs B{B.device}")
+            raise ValueError(
+                f"A and B must be on same device, got A{A.device} vs B{B.device}"
+            )
         
-        logger.debug(f"Validated input matrices: shape={A.shape}, device={A.device}")
+        logger.debug(f"Validated matrices: shape={A.shape}, device={A.device}")
     
     @staticmethod
-    def _validate_constraints(A: Tensor, B: Tensor, epsilon: float = 1e-6) -> None:
-        """
-        Validate that projected matrices satisfy all constraints.
+    def _validate_constraints(
+        A: Tensor, 
+        B: Tensor, 
+        epsilon: float = 1e-6
+    ) -> None:
+        """Validate projected matrices satisfy all constraints.
         
         Args:
-            A: Projected confusion matrix A
-            B: Projected confusion matrix B
-            epsilon: Tolerance for constraint validation
+            A: Projected confusion matrix A.
+            B: Projected confusion matrix B.
+            epsilon: Tolerance for validation.
             
         Raises:
-            RuntimeError: If constraints are not satisfied within tolerance
+            RuntimeError: If constraints are violated.
         """
         K = A.shape[0]
         
-        # Check non-negativity constraint
+        # Non-negativity
         if torch.any(A < -epsilon) or torch.any(B < -epsilon):
-            min_A = A.min().item()
-            min_B = B.min().item()
-            raise RuntimeError(f"Non-negativity constraint violated: A_min={min_A:.6f}, B_min={min_B:.6f}")
+            raise RuntimeError(
+                f"Non-negativity violated: "
+                f"A_min={A.min().item():.6f}, B_min={B.min().item():.6f}"
+            )
         
-        # Check row-sum constraint
+        # Row-sum
         Z = torch.cat([A, B], dim=1)
         row_sums = Z.sum(dim=1)
-        target_sums = torch.ones(K, device=A.device)
+        max_deviation = torch.abs(row_sums - torch.ones(K, device=A.device)).max().item()
         
-        max_deviation = torch.abs(row_sums - target_sums).max().item()
         if max_deviation > epsilon:
-            raise RuntimeError(f"Row-sum constraint violated: max_deviation={max_deviation:.6f} > epsilon={epsilon}")
+            raise RuntimeError(
+                f"Row-sum violated: max_deviation={max_deviation:.6f} > {epsilon}"
+            )
         
-        logger.debug(f"Constraint validation passed: max_deviation={max_deviation:.6f}")
+        logger.debug(f"Constraints satisfied: max_deviation={max_deviation:.6f}")
     
     @staticmethod
-    def compute_constraint_violation(A: Tensor, B: Tensor) -> dict:
-        """
-        Compute the degree of constraint violation for given confusion matrices.
+    def compute_constraint_violation(
+        A: Tensor, 
+        B: Tensor
+    ) -> Dict[str, Union[float, bool]]:
+        """Compute constraint violation metrics.
         
         Args:
-            A: Confusion matrix A
-            B: Confusion matrix B
+            A: Confusion matrix A.
+            B: Confusion matrix B.
             
         Returns:
-            Dictionary containing constraint violation metrics:
-            - 'non_negativity_violation_A': Maximum negative value in A
-            - 'non_negativity_violation_B': Maximum negative value in B  
-            - 'row_sum_max_deviation': Maximum deviation from row-sum constraint
-            - 'row_sum_mean_deviation': Mean deviation from row-sum constraint
+            Dictionary with violation metrics.
         """
         ConstraintUtils._validate_input_matrices(A, B)
         
         K = A.shape[0]
         
         # Non-negativity violations
-        neg_A = torch.clamp(-A, min=1e-6)  # Positive where A < 0
-        neg_B = torch.clamp(-B, min=1e-6)  # Positive where B < 0
-        
-        non_neg_violation_A = neg_A.max().item()
-        non_neg_violation_B = neg_B.max().item()
+        neg_A = torch.clamp(-A, min=1e-6)
+        neg_B = torch.clamp(-B, min=1e-6)
         
         # Row-sum violations
         Z = torch.cat([A, B], dim=1)
         row_sums = Z.sum(dim=1)
-        target_sums = torch.ones(K, device=A.device)
+        deviations = torch.abs(row_sums - torch.ones(K, device=A.device))
         
-        deviations = torch.abs(row_sums - target_sums)
-        row_sum_max_deviation = deviations.max().item()
-        row_sum_mean_deviation = deviations.mean().item()
-        
-        violations = {
-            'non_negativity_violation_A': non_neg_violation_A,
-            'non_negativity_violation_B': non_neg_violation_B,
-            'row_sum_max_deviation': row_sum_max_deviation,
-            'row_sum_mean_deviation': row_sum_mean_deviation,
-            'is_valid': (non_neg_violation_A <= 1e-6 and 
-                        non_neg_violation_B <= 1e-6 and 
-                        row_sum_max_deviation <= 1e-6)
+        return {
+            'non_negativity_violation_A': neg_A.max().item(),
+            'non_negativity_violation_B': neg_B.max().item(),
+            'row_sum_max_deviation': deviations.max().item(),
+            'row_sum_mean_deviation': deviations.mean().item(),
+            'is_valid': (
+                neg_A.max().item() <= 1e-6 and 
+                neg_B.max().item() <= 1e-6 and 
+                deviations.max().item() <= 1e-6
+            )
         }
-        
-        return violations
     
     @staticmethod
-    def create_valid_initialization(K: int, device: torch.device = None) -> Tuple[Tensor, Tensor]:
-        """
-        Create valid initial confusion matrices satisfying all constraints.
+    def create_valid_initialization(
+        K: int, 
+        device: torch.device = None
+    ) -> Tuple[Tensor, Tensor]:
+        """Create valid initial confusion matrices.
         
-        Creates matrices that satisfy:
-        - A initialized as identity matrix (no noise assumption)
-        - B initialized as zero matrix
-        - All constraints satisfied
+        Initializes:
+            A = I (identity, no noise assumption)
+            B = 0 (zero matrix)
         
         Args:
-            K: Number of classes
-            device: Device for created tensors (default: CPU)
+            K: Number of classes.
+            device: Device for tensors (default: CPU).
             
         Returns:
-            Tuple of (A_initial, B_initial) satisfying constraints
+            Tuple of (A_initial, B_initial) satisfying constraints.
         """
         if device is None:
             device = torch.device('cpu')
         
-        # Initialize A as identity matrix (no noise assumption)
         A_initial = torch.eye(K, device=device)
-        
-        # Initialize B as zero matrix
         B_initial = torch.zeros(K, K, device=device)
         
-        # Verify constraints are satisfied
-        violations = ConstraintUtils.compute_constraint_violation(A_initial, B_initial)
+        violations = ConstraintUtils.compute_constraint_violation(
+            A_initial, B_initial
+        )
+        
         if not violations['is_valid']:
             raise RuntimeError(f"Initialization violates constraints: {violations}")
         
-        
+        logger.debug(f"Created valid initialization for K={K}")
         return A_initial, B_initial
