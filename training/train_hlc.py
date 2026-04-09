@@ -1,34 +1,20 @@
-import json
-import hashlib
 import numpy as np
+import orjson
 import torch
-import torch.nn as nn
-import tqdm
-from dataclasses import dataclass, field
-from pathlib import Path
+import torch.nn as nn 
+from dataclasses import dataclass, field 
 from pprint import pprint
-from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
-from torchvision.models import resnet50, ResNet50_Weights
-from transformers import (
-    HfArgumentParser, 
-    TrainingArguments,
-    ViTModel
-)
-from torchsummary import summary
+from transformers import HfArgumentParser
 from datetime import datetime
 
 import dnn.hlc as hlc
-from .trainer import HLCTrainer
+from trainers import HLCTrainer
 from argument import (
     CustomTrainingArguments,
     DataTrainingArguments,
     ModelArguments,
 ) 
-from dnn.mlc import MultilabelClassifier, ViTModelWrapper
-from dnn.utils import get_device
-from metrics import test
-from packaging import version
+from dnn.mlc import MultilabelClassifier
 
 
 @dataclass
@@ -59,11 +45,7 @@ torch.manual_seed(train_args.seed)
 torch.cuda.manual_seed(train_args.seed)
 
 
-if data_args.dataset.lower() == 'coco':
-    from data_process import data_utils_old as data_utils 
-    print('Importing the old data process for COCO')
-else:
-    from data_process import data_utils 
+from data_process import data_utils 
 
 
 def train_hlc(run_index=0):
@@ -73,8 +55,8 @@ def train_hlc(run_index=0):
     pprint(arg_dict)
 
     data = data_utils.load_data(data_args)
-    train_dataset, val_dataset0, val_dataset1, test_dataset, n_labels = \
-        data['train_dataset'], data['val_dataset0'], data['val_dataset1'], data['test_dataset'], data['n_labels'] 
+    train_dataset, val_dataset, clean_val_dataset, test_dataset, n_labels = \
+        data['train_dataset'], data['val_dataset'], data['clean_val_dataset'], data['test_dataset'], data['n_labels'] 
 
     # Check consistency
     if train_args.checksum:
@@ -90,7 +72,7 @@ def train_hlc(run_index=0):
         shuffle=False,
         pin_memory=True)
     val_loader = DataLoader(
-        dataset=val_dataset0,
+        dataset=val_dataset,
         batch_size=train_args.batch_size*4,
         num_workers=data_args.num_workers,  
         drop_last=False,
@@ -107,7 +89,7 @@ def train_hlc(run_index=0):
     for run_index in range(train_args.n_repeats):
         arg_dict['run_index'] = run_index
         # Create UID for saving relevant files (model, configuration, and summary)
-        uid = hashlib.md5(json.dumps(arg_dict, sort_keys=True).encode('utf-8')).hexdigest() 
+        uid = hashlib.md5(orjson.dumps(arg_dict, option=orjson.OPT_SORT_KEYS)).hexdigest() 
 
         arg_dict['uid'] = uid
         # Time added after the uid is created
@@ -157,13 +139,13 @@ def train_hlc(run_index=0):
             loss_fn=loss_fn,
             optimizer=optimizer,
             lr_scheduler=lr_scheduler,
-            device=get_device(),
             delta=train_args.delta,
             epoch_update_start=train_args.epoch_update_start,
             beta=train_args.beta,
             arg_dict=arg_dict,
             eval_test_at_final_loop_only=train_args.eval_test_at_final_loop_only, 
-            metric_storing_path=f"./results/{arg_dict['dataset']}_results.csv"
+            metric_storing_path=f"./results/{arg_dict['dataset']}_results.csv",
+            accelerator=self.accelerator,
         )
 
         trainer.train_model(

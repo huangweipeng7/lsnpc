@@ -1,43 +1,28 @@
-import json
 import hashlib
+
 import numpy as np
+import orjson
 import torch
 import torch.nn as nn
-import tqdm
-from copy import deepcopy
 from dataclasses import dataclass, field
-from packaging import version
-from pathlib import Path
 from pprint import pprint
-from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
 from torchvision.models import resnet50, ResNet50_Weights
-from transformers import HfArgumentParser, TrainingArguments
-from transformers import AutoImageProcessor, LevitModel, ViTModel
+from transformers import HfArgumentParser
+from transformers import LevitModel
 from datetime import datetime
 from sklearn.neighbors import KNeighborsClassifier
 
 import dnn.hlc as hlc
-from .trainer import KNNTrainer
+from trainers import KNNTrainer
 from argument import (
     CustomTrainingArguments,
     DataTrainingArguments,
     ModelArguments
 )
 from data_process import data_utils as data_utils
-from dnn.mlc import MultilabelClassifier, ViTModelWrapper 
+from dnn.mlc import MultilabelClassifier, ViTModelWrapper
 from dnn.mcm import MCMClassifier
-from dnn.utils import freeze_param, get_device
-from metrics import test
-#from nlc.nlc_vae import (
-#    init_label_embedding,
-#    AttentionLabelEncoder,
-#    CorrectionLoss,
-#    EncoderCopulasWrapper,
-#    MLCEncoder, 
-#    MLCDecoder, 
-#    NoisyLabelCorrectionVAE
-#)
+from dnn.utils import freeze_param
 
 
 @dataclass
@@ -73,8 +58,8 @@ def train_knn():
     }
  
     data = data_utils.load_data(data_args)
-    train_dataset, val_dataset0, val_dataset1, test_dataset, n_labels = \
-        data['train_dataset'], data['val_dataset0'], data['val_dataset1'], data['test_dataset'], data['n_labels']
+    train_dataset, val_dataset, clean_val_dataset, test_dataset, n_labels = \
+        data['train_dataset'], data['val_dataset'], data['clean_val_dataset'], data['test_dataset'], data['n_labels']
  
     # Check consistency
     if train_args.checksum:
@@ -120,7 +105,7 @@ def train_knn():
     for run_index in range(train_args.n_repeats):
         arg_dict['run_index'] = run_index
         # Create UID for saving relevant files (model, configuration, and summary)
-        uid = hashlib.md5(json.dumps(arg_dict, sort_keys=True).encode('utf-8')).hexdigest() 
+        uid = hashlib.md5(orjson.dumps(arg_dict, option=orjson.OPT_SORT_KEYS)).hexdigest()
 
         arg_dict['uid'] = uid
         # Time added after the uid is created
@@ -140,7 +125,7 @@ def train_knn():
             pin_memory=True
         )
         val_loader = DataLoader(
-            dataset=val_dataset0,
+            dataset=val_dataset,
             batch_size=train_args.batch_size,
             num_workers=data_args.num_workers,
             drop_last=False,
@@ -175,4 +160,3 @@ def train_knn():
 
 if __name__ == '__main__':
     train_knn()
-

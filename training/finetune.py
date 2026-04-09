@@ -1,4 +1,4 @@
-import json
+import orjson
 import hashlib
 import numpy as np
 import torch
@@ -21,7 +21,7 @@ from transformers import (
 from torchsummary import summary
 
 import dnn.hlc as hlc
-from .trainer import Trainer
+from trainers import Trainer
 from argument import (
     CustomTrainingArguments,
     DataTrainingArguments,
@@ -54,11 +54,7 @@ np.random.seed(train_args.seed)
 torch.manual_seed(train_args.seed)
 torch.cuda.manual_seed(train_args.seed)
 
-if data_args.dataset.lower() == 'coco':
-    from data_process import data_utils_old as data_utils 
-    print('Importing the old data process for COCO')
-else:
-    from data_process import data_utils 
+from data_process import data_utils 
 
 
 def train_clf():
@@ -68,12 +64,12 @@ def train_clf():
     pprint(arg_dict)
 
     data = data_utils.load_data(data_args)
-    train_dataset, val_dataset0, val_dataset1, test_dataset, n_labels = \
-        data['train_dataset'], data['val_dataset0'], data['val_dataset1'], data['test_dataset'], data['n_labels']
+    train_dataset, val_dataset, clean_val_dataset, test_dataset, n_labels = \
+        data['train_dataset'], data['val_dataset'], data['clean_val_dataset'], data['test_dataset'], data['n_labels']
 
     # print(f'Training examples: {len(train_dataset.labels)}')
-    # print(f'Val0 examples: {len(val_dataset0.labels)}')
-    # print(f'Val1 examples: {len(val_dataset1.labels)}')
+    # print(f'Val examples: {len(val_dataset.labels)}')
+    # print(f'Clean val examples: {len(clean_val_dataset.labels)}')
     # print(f'Test examples: {len(test_dataset.labels)}')
     # print(f'Number of labels: {n_labels}')
 
@@ -84,14 +80,14 @@ def train_clf():
         print('test_dataset true labels', (test_dataset.true_labels[:10]))
 
     train_loader = DataLoader(
-        dataset=val_dataset1,
+        dataset=clean_val_dataset,
         batch_size=train_args.batch_size,
         num_workers=data_args.num_workers,
         drop_last=False,
         shuffle=True,
         pin_memory=True)
     val_loader = DataLoader(
-        dataset=val_dataset0,
+        dataset=val_dataset,
         batch_size=train_args.batch_size*4,
         num_workers=data_args.num_workers,
         drop_last=False,
@@ -108,7 +104,7 @@ def train_clf():
     for run_index in range(train_args.n_repeats):
         arg_dict['run_index'] = run_index 
         # Create UID for saving relevant files (model, configuration, and summary)
-        uid = hashlib.md5(json.dumps(arg_dict, sort_keys=True).encode('utf-8')).hexdigest() 
+        uid = hashlib.md5(orjson.dumps(arg_dict, option=orjson.OPT_SORT_KEYS)).hexdigest() 
 
         arg_dict['uid'] = uid
         # Time added after the uid is created
@@ -163,9 +159,9 @@ def train_clf():
             loss_fn=loss_fn,
             optimizer=optimizer,
             lr_scheduler=lr_scheduler,
-            device=get_device(),
             arg_dict=arg_dict,
-            eval_test_at_final_loop_only=train_args.eval_test_at_final_loop_only
+            eval_test_at_final_loop_only=train_args.eval_test_at_final_loop_only,
+            accelerator=self.accelerator,
         )
 
         trainer.train_model(

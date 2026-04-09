@@ -1,36 +1,28 @@
-import json
 import hashlib
 import numpy as np
+import orjson
 import torch
 import torch.nn as nn
-import tqdm
-
 from datetime import datetime
 from pathlib import Path
 from pprint import pprint
 from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
 from torchvision.models import resnet50, ResNet50_Weights
 from transformers import (
-    AutoImageProcessor, 
     HfArgumentParser,
-    LevitModel, 
-    TrainingArguments, 
+    LevitModel,
     ViTModel
 )
-from torchsummary import summary
 
 import dnn.hlc as hlc
-from .trainer import MCMTrainer
+from trainers import MCMTrainer
 from argument import (
     CustomTrainingArguments,
     DataTrainingArguments,
     ModelArguments
 )
-from dnn.mcm import MCMClassifier, ViTModelWrapper, MCMLoss
-from dnn.utils import freeze_param, get_device
-from metrics import test 
-from packaging import version
+from dnn.mcm import MCMClassifier, MCMLoss
+from dnn.utils import freeze_param
 
 
 parser = HfArgumentParser((
@@ -44,11 +36,7 @@ np.random.seed(train_args.seed)
 torch.manual_seed(train_args.seed)
 torch.cuda.manual_seed(train_args.seed)
 
-if data_args.dataset.lower() == 'coco':
-    from data_process import data_utils_old as data_utils 
-    print('Importing the old data process for COCO')
-else:
-    from data_process import data_utils 
+from data_process import data_utils 
 
 
 def train_clf():
@@ -58,13 +46,13 @@ def train_clf():
     pprint(arg_dict)
 
     data = data_utils.load_data(data_args)
-    train_dataset, val_dataset0, _, test_dataset, n_labels = \
-        data['train_dataset'], data['val_dataset0'], data['val_dataset1'], data['test_dataset'], data['n_labels']
+    train_dataset, val_dataset, _, test_dataset, n_labels = \
+        data['train_dataset'], data['val_dataset'], data['clean_val_dataset'], data['test_dataset'], data['n_labels']
  
     # Check consistency
     if train_args.checksum:
-        print('val_dataset true labels', (val_dataset0.true_labels[:10]))
-        print('val_dataset labels', val_dataset0.labels[:10])
+        print('val_dataset true labels', (val_dataset.true_labels[:10]))
+        print('val_dataset labels', val_dataset.labels[:10])
         print('test_dataset true labels', (test_dataset.true_labels[:10]))
 
     train_loader = DataLoader(
@@ -75,7 +63,7 @@ def train_clf():
         shuffle=True,
         pin_memory=True)
     val_loader = DataLoader(
-        dataset=val_dataset0,
+        dataset=val_dataset,
         batch_size=train_args.batch_size*2,
         num_workers=data_args.num_workers,
         drop_last=False,
@@ -92,7 +80,7 @@ def train_clf():
     for run_index in range(train_args.n_repeats):
         arg_dict['run_index'] = run_index 
         # Create UID for saving relevant files (model, configuration, and summary)
-        uid = hashlib.md5(json.dumps(arg_dict, sort_keys=True).encode('utf-8')).hexdigest() 
+        uid = hashlib.md5(orjson.dumps(arg_dict, option=orjson.OPT_SORT_KEYS)).hexdigest() 
 
         arg_dict['uid'] = uid
         # Time added after the uid is created
@@ -130,18 +118,20 @@ def train_clf():
             loss_fn=loss_fn,
             optimizer=optimizer,
             lr_scheduler=lr_scheduler,
-            device=get_device(),
             arg_dict=arg_dict,
             metric_storing_path=f"./results/{arg_dict['dataset']}_results.csv",
-            eval_test_at_final_loop_only=train_args.eval_test_at_final_loop_only
+            eval_test_at_final_loop_only=train_args.eval_test_at_final_loop_only,
+            accelerator=None,
         )
 
+        gc_interval = getattr(train_args, 'gc_interval', 5)
         trainer.train_model(
             train_args.n_train_epoch, 
             train_loader,
             val_loader,
             test_loader,
-            verbose=True
+            verbose=True,
+            gc_interval=gc_interval,
         )
 
         print(f'Round {run_index} finished. \n\n') 
