@@ -6,18 +6,15 @@ lazy image loading, and optimized data processing.
 """
 
 import csv
-import subprocess
-from urllib.parse import urlparse
-from pathlib import Path
-
-import numpy as np
-from sklearn.model_selection import train_test_split
 import datasets
-import torch
+import numpy as np
+import subprocess
 import torch.utils.data as data
+from pathlib import Path 
+from sklearn.model_selection import train_test_split
+from urllib.parse import urlparse
 
-from .shared_utils import (
-    create_lazy_dataset,
+from .shared_utils import ( 
     dataset_split,
     download_url,
     generate_noisy_labels,

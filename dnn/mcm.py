@@ -7,6 +7,7 @@ from torch import Tensor
 from transformers import ViTModel
 from utils import ConstraintUtils
 
+
 class MCMClassifier(nn.Module):
 
     def __init__(self, encoder, emb_size, n_labels, dp=0.1):

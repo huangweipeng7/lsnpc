@@ -4,16 +4,16 @@ This module contains common functions used across different dataset loaders,
 including noise generation, dataset splitting, image loading, and caching utilities.
 """
 
-import logging
-import urllib.request
-from functools import partial
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
-
+import logging 
 import numpy as np
+from functools import partial
 from numpy.testing import assert_array_almost_equal
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple, Union 
 from PIL import Image, ImageFile
-import datasets
+
+# Default random seed for reproducibility across the project
+DEFAULT_RANDOM_SEED = 256
 
 logger = logging.getLogger(__name__)
 

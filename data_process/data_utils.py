@@ -8,14 +8,13 @@ This module provides utilities for loading and processing datasets with support 
 """
 
 import logging
-from pathlib import Path
 import pickle
-from functools import partial
-from typing import Dict, Union
-
 import torch
-from torch.utils.data import DataLoader
 import torchvision.transforms as transforms
+from pathlib import Path
+from functools import partial
+from typing import Dict, Union 
+from torch.utils.data import DataLoader
 
 from .deepfashion import DeepFashion
 from .coco import COCO2014
@@ -29,32 +28,14 @@ logger = logging.getLogger(__name__)
 
 def batch_transform(batch, transform):
     """Apply transformation to a batch of images and labels.
-    
+
     Args:
         batch (dict): Dictionary containing 'data' (images) and 'labels'.
         transform (callable): Transformation pipeline to apply to images.
-        
-    Returns:
-        dict: Transformed batch with images and labels as tensors.
-    """
-    batch['data'] = [transform(x) for x in batch['data']]
-    batch['labels'] = [torch.tensor(x) for x in batch['labels']]
-    return batch
 
-
-def batch_transform_fast(batch, transform):
-    """Optimized batch transformation using list comprehension.
-    
-    This version is optimized for speed by minimizing function call overhead.
-    
-    Args:
-        batch (dict): Dictionary containing 'data' (images) and 'labels'.
-        transform (callable): Transformation pipeline to apply to images.
-        
     Returns:
-        dict: Transformed batch with images and labels as tensors.
+        dict: Transformed batch with images as tensor list and labels stacked as tensor.
     """
-    # Use list comprehension for faster processing
     batch['data'] = [transform(img) for img in batch['data']]
     batch['labels'] = torch.stack([torch.tensor(label) for label in batch['labels']])
     return batch
@@ -156,27 +137,27 @@ def load_data(args):
         train_dataset = cached_data['train_data'].with_format(
             'torch', columns=['labels'], output_all_columns=True
         )
-        train_dataset.set_transform(partial(batch_transform_fast, transform=train_transform))
+        train_dataset.set_transform(partial(batch_transform, transform=train_transform))
         
         # Handle both old (val_data0/val_data1) and new (val_data/clean_val_data) cache formats
         if 'val_data' in cached_data:
             val_dataset = cached_data['val_data'].with_transform(
-                partial(batch_transform_fast, transform=val_transform)
+                partial(batch_transform, transform=val_transform)
             )
             clean_val_dataset = cached_data['clean_val_data'].with_transform(
-                partial(batch_transform_fast, transform=train_transform)
+                partial(batch_transform, transform=train_transform)
             )
         else:
             # Backward compatibility: old cache used val_data0/val_data1
             val_dataset = cached_data['val_data0'].with_transform(
-                partial(batch_transform_fast, transform=val_transform)
+                partial(batch_transform, transform=val_transform)
             )
             clean_val_dataset = cached_data['val_data1'].with_transform(
-                partial(batch_transform_fast, transform=train_transform)
+                partial(batch_transform, transform=train_transform)
             )
         
         test_dataset = cached_data['test_data'].with_transform(
-            partial(batch_transform_fast, transform=val_transform)
+            partial(batch_transform, transform=val_transform)
         )
         
         n_labels = cached_data['n_labels']
@@ -203,16 +184,16 @@ def load_data(args):
         train_dataset = data_class.train_data.with_format(
             'torch', columns=['labels'], output_all_columns=True
         )
-        train_dataset.set_transform(partial(batch_transform_fast, transform=train_transform))
+        train_dataset.set_transform(partial(batch_transform, transform=train_transform))
         
         val_dataset = data_class.val_data.with_transform(
-            partial(batch_transform_fast, transform=val_transform)
+            partial(batch_transform, transform=val_transform)
         )
         clean_val_dataset = data_class.clean_val_data.with_transform(
-            partial(batch_transform_fast, transform=train_transform)
+            partial(batch_transform, transform=train_transform)
         )
         test_dataset = data_class.test_data.with_transform(
-            partial(batch_transform_fast, transform=val_transform)
+            partial(batch_transform, transform=val_transform)
         )
 
         n_labels = data_class.get_number_classes()
