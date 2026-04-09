@@ -113,3 +113,31 @@ class CustomTrainingArguments:
         default='./runs/results.csv',
         metadata={'help': 'the path for storing the metric results'},
     )
+    save_best_only: bool = field(
+        default=True,
+        metadata={'help': 'only save model when validation improves (best model selection)'},
+    )
+    early_stopping_patience: int = field(
+        default=0,
+        metadata={'help': 'stop training after N epochs without improvement (0=disabled)'},
+    )
+    early_stopping_min_delta: float = field(
+        default=0.0,
+        metadata={'help': 'minimum improvement threshold for early stopping'},
+    )
+    gc_interval: int = field(
+        default=5,
+        metadata={'help': 'run garbage collection every N epochs'},
+    )
+    logging_level: str = field(
+        default='INFO',
+        metadata={'help': 'logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)'},
+    )
+    verbose: bool = field(
+        default=False,
+        metadata={'help': 'enable verbose (DEBUG) logging'},
+    )
+    log_file: Optional[str] = field(
+        default=None,
+        metadata={'help': 'path to log file (if None, only console logging is used)'},
+    )

@@ -7,7 +7,11 @@ including different activation functions, normalization layers, and dropout.
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import warnings
 from typing import Literal, Optional
+
+
+SUPPORTED_NORMS = {'batchnorm', 'layernorm', 'rmsnorm'}
 
 
 def build_mlp(
@@ -38,6 +42,15 @@ def build_mlp(
         >>> x = torch.randn(32, 512)
         >>> output = mlp(x)
     """
+    # Warn if an unsupported norm is specified
+    if norm is not None and norm not in SUPPORTED_NORMS:
+        warnings.warn(
+            f"Unsupported norm type '{norm}'. "
+            f"Supported norms: {SUPPORTED_NORMS}. No normalization will be applied.",
+            UserWarning
+        )
+        norm = None
+    
     layers = []
     
     for i in range(n_layers - 1):
