@@ -13,6 +13,7 @@ from .tomato import Tomato
 from .voc import Voc2007, Voc2012
 from .nuswide import NUSWide
 from .cifar10 import CIFAR10
+from .fmnist import FMNIST
 from utils import MultiScaleCrop, Warp
 
 
@@ -66,6 +67,8 @@ def load_data(args):
         DataClass = NUSWide
     elif args.dataset=='cifar10':
         DataClass = CIFAR10
+    elif args.dataset=='fmnist':
+        DataClass = FMNIST
     else:
         raise Exception(f"Dataset not prepared: {args.dataset}")
    
